@@ -1,0 +1,5 @@
+#!/bin/sh
+
+export GOIDEN3RUN="/home/dev/git/iden3/private-configs/run.sh"
+
+exec $@
