@@ -1,0 +1,8 @@
+workdir = "/tmp/iden3-CIT"
+listen = "127.0.0.1:8010"
+
+[timeouts]
+loop = 60
+test = 120
+setup = 120
+

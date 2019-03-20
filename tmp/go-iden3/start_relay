@@ -1,2 +1,2 @@
 #!/bin/sh
-${GOIDEN3RUN} relay
+exec ${GOIDEN3RUN} relay

@@ -1,2 +1,2 @@
 #!/bin/sh
-npm run test:int test/id.test.js
+exec npm run test:int test/id.test.js
