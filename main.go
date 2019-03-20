@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -68,10 +69,12 @@ func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string) {
 	if err := s.Cmd.Start(); err != nil {
 		log.Fatal(err)
 	}
-	stdoutFileName := fmt.Sprintf("%s.stdout.txt", path.Base(s.Path))
-	go writeOutFile(stdout, path.Join(outDir, stdoutFileName))
-	stderrFileName := fmt.Sprintf("%s.stderr.txt", path.Base(s.Path))
-	go writeOutFile(stderr, path.Join(outDir, stderrFileName))
+	outFileName := fmt.Sprintf("%s.out.txt", path.Base(s.Path))
+	outputHandler(stdout, stderr, path.Join(outDir, outFileName), "", nil)
+	// stdoutFileName := fmt.Sprintf("%s.stdout.txt", path.Base(s.Path))
+	// go writeOutFile(stdout, path.Join(outDir, stdoutFileName))
+	// stderrFileName := fmt.Sprintf("%s.stderr.txt", path.Base(s.Path))
+	// go writeOutFile(stderr, path.Join(outDir, stderrFileName))
 }
 
 func (s *Script) Wait() error {
@@ -266,6 +269,54 @@ func writeOutFile(out io.ReadCloser, filePath string) {
 	}
 }
 
+func outputHandler(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
+	pattern string, readyCh chan bool) {
+	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0650)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+	lineCh := make(chan string)
+	endCh := make(chan error)
+	readLine := func(rd io.Reader) {
+		reader := bufio.NewReader(rd)
+		for {
+			line, err := reader.ReadString('\n')
+			lineCh <- line
+			if err != nil {
+				// log.Debugf("DBG readLine %v", err)
+				break
+			}
+		}
+		endCh <- err
+	}
+	go readLine(stdout)
+	go readLine(stderr)
+	ready := false
+	if pattern == "" {
+		ready = true
+	}
+	for {
+		select {
+		case line := <-lineCh:
+			if !ready && strings.Contains(line, pattern) {
+				readyCh <- true
+				ready = true
+			}
+			// log.Debugf("DBG %v: %v", filePath, line)
+			_, err := io.WriteString(f, line)
+			if err != nil {
+				log.Fatalf("Can't write output to file %v: %v", filePath, err)
+			}
+		case err := <-endCh:
+			if err != nil && err != io.EOF {
+				log.Errorf("Process stdout/stderr error: %v", err)
+			}
+			return
+		}
+	}
+}
+
 func (rs *Repos) Run() {
 	now := time.Now()
 	ts := fmt.Sprintf("%08d_%s", now.Unix(), now.Format(time.RFC3339))
@@ -279,7 +330,6 @@ func (rs *Repos) Run() {
 	rs.Scripts.Setup.Run(ctxSetup, rs.Scripts.PreludePath, "", outDir)
 	if err := rs.Scripts.Setup.Wait(); err != nil {
 		log.Errorf("Scripts.Setup error: %v", err)
-		return
 	}
 	for _, repo := range rs.Repos {
 		script := repo.Scripts.Setup
