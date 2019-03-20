@@ -1,8 +1,22 @@
 workdir = "/tmp/iden3-CIT"
 listen = "127.0.0.1:8010"
 
+repos = [
+    "https://github.com/iden3/go-iden3.git",
+    "https://github.com/iden3/iden3js.git",
+    "https://github.com/iden3/notifications-server.git",
+    "https://github.com/iden3/tx-forwarder.git",
+]
+
 [timeouts]
 loop = 60
 test = 120
 setup = 120
+
+[scripts.go-iden3.start_nameserver]
+readystr = "API server at"
+
+[scripts.go-iden3.start_relay]
+readystr = "API server at"
+
 

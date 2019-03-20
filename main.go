@@ -28,15 +28,21 @@ import (
 // const testTimeout = 120
 // const setupTimeout = 120
 
+type ScriptCfg struct {
+	ReadyStr string
+}
+
 type Config struct {
 	WorkDir  string
 	ConfDir  string `mapstructure:"-"`
 	Listen   string
+	ReposUrl []string `mapstructure:"repos"`
 	Timeouts struct {
 		Loop  int64
 		Test  int64
 		Setup int64
 	}
+	ScriptsCfg map[string]map[string]ScriptCfg `mapstructure:"scripts"`
 }
 
 type Timeouts struct {
@@ -46,11 +52,13 @@ type Timeouts struct {
 }
 
 type Script struct {
-	Path string
-	Cmd  *exec.Cmd
+	Path     string
+	ReadyStr string
+	Cmd      *exec.Cmd
 }
 
-func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string) {
+func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string,
+	readyCh chan bool) {
 	if err := os.MkdirAll(outDir, 0700); err != nil {
 		log.Fatal(err)
 	}
@@ -70,7 +78,7 @@ func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string) {
 		log.Fatal(err)
 	}
 	outFileName := fmt.Sprintf("%s.out.txt", path.Base(s.Path))
-	outputHandler(stdout, stderr, path.Join(outDir, outFileName), "", nil)
+	outputHandler(stdout, stderr, path.Join(outDir, outFileName), s.ReadyStr, readyCh)
 	// stdoutFileName := fmt.Sprintf("%s.stdout.txt", path.Base(s.Path))
 	// go writeOutFile(stdout, path.Join(outDir, stdoutFileName))
 	// stderrFileName := fmt.Sprintf("%s.stderr.txt", path.Base(s.Path))
@@ -164,7 +172,7 @@ type Repos struct {
 }
 
 func NewRepos(confDir, outDir, reposDir string, reposUrl []string,
-	timeouts Timeouts) (*Repos, error) {
+	scriptsCfg map[string]map[string]ScriptCfg, timeouts Timeouts) (*Repos, error) {
 	repos := []*Repo{}
 	for _, repoUrl := range reposUrl {
 		name := repoUrl[strings.LastIndex(repoUrl, "/")+1:]
@@ -194,12 +202,17 @@ func NewRepos(confDir, outDir, reposDir string, reposUrl []string,
 			// return nil, err
 		}
 		var scripts Scripts
+		cfg := scriptsCfg[repo.Name()]
 		for _, file := range files {
 			filePath := path.Join(repoConfDir, file.Name())
 			if strings.HasPrefix(file.Name(), "setup") {
 				scripts.Setup = &Script{Path: filePath}
 			} else if strings.HasPrefix(file.Name(), "start") {
-				scripts.Start = append(scripts.Start, &Script{Path: filePath})
+				script := Script{Path: filePath}
+				if cfg != nil {
+					script.ReadyStr = cfg[file.Name()].ReadyStr
+				}
+				scripts.Start = append(scripts.Start, &script)
 			} else if strings.HasPrefix(file.Name(), "test") {
 				scripts.Test = append(scripts.Test, &Script{Path: filePath})
 			} else if strings.HasPrefix(file.Name(), "stop") {
@@ -270,7 +283,7 @@ func writeOutFile(out io.ReadCloser, filePath string) {
 }
 
 func outputHandler(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
-	pattern string, readyCh chan bool) {
+	readyStr string, readyCh chan bool) {
 	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0650)
 	if err != nil {
 		log.Fatal(err)
@@ -293,13 +306,13 @@ func outputHandler(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 	go readLine(stdout)
 	go readLine(stderr)
 	ready := false
-	if pattern == "" {
+	if readyStr == "" {
 		ready = true
 	}
 	for {
 		select {
 		case line := <-lineCh:
-			if !ready && strings.Contains(line, pattern) {
+			if !ready && strings.Contains(line, readyStr) {
 				readyCh <- true
 				ready = true
 			}
@@ -327,7 +340,7 @@ func (rs *Repos) Run() {
 	ctxSetup, cancelSetup := context.WithTimeout(context.Background(),
 		rs.Timeouts.Setup*time.Second)
 	defer cancelSetup()
-	rs.Scripts.Setup.Run(ctxSetup, rs.Scripts.PreludePath, "", outDir)
+	rs.Scripts.Setup.Run(ctxSetup, rs.Scripts.PreludePath, "", outDir, nil)
 	if err := rs.Scripts.Setup.Wait(); err != nil {
 		log.Errorf("Scripts.Setup error: %v", err)
 	}
@@ -336,7 +349,8 @@ func (rs *Repos) Run() {
 		ctx, cancel := context.WithTimeout(context.Background(),
 			rs.Timeouts.Setup*time.Second)
 		defer cancel()
-		script.Run(ctx, rs.Scripts.PreludePath, repo.Dir, path.Join(outDir, repo.Name()))
+		script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
+			path.Join(outDir, repo.Name()), nil)
 		if err := script.Wait(); err != nil {
 			log.Errorf("Setup %v -> %v finished with error: %v",
 				repo.Name(), script.Path, err)
@@ -353,10 +367,13 @@ func (rs *Repos) Run() {
 			defer cancel()
 			s := script
 			repoName := repo.Name()
+			readyCh := make(chan bool)
 			go func() {
 				s.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
-					path.Join(outDir, repoName))
+					path.Join(outDir, repoName), readyCh)
 			}()
+			<-readyCh
+			log.Debugf("Start %v -> %v is ready", repo.Name(), script.Path)
 		}
 	}
 
@@ -368,7 +385,7 @@ func (rs *Repos) Run() {
 				rs.Timeouts.Test*time.Second)
 			defer cancel()
 			script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
-				path.Join(outDir, repo.Name()))
+				path.Join(outDir, repo.Name()), nil)
 			if err := script.Wait(); err != nil {
 				log.Errorf("Test %v -> %v finished with error: %v",
 					repo.Name(), script.Path, err)
@@ -446,12 +463,6 @@ func main() {
 	cfg.ConfDir = *confDir
 	fmt.Printf("%#v\n", cfg)
 
-	reposUrl := []string{
-		"https://github.com/iden3/go-iden3.git",
-		"https://github.com/iden3/iden3js.git",
-		"https://github.com/iden3/notifications-server.git",
-		"https://github.com/iden3/tx-forwarder.git",
-	}
 	if err := os.MkdirAll(cfg.WorkDir, 0700); err != nil {
 		log.Fatal(err)
 	}
@@ -464,7 +475,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	repos, err := NewRepos(cfg.ConfDir, outDir, reposDir, reposUrl,
+	repos, err := NewRepos(cfg.ConfDir, outDir, reposDir, cfg.ReposUrl,
+		cfg.ScriptsCfg,
 		Timeouts{
 			Loop:  time.Duration(cfg.Timeouts.Loop),
 			Setup: time.Duration(cfg.Timeouts.Setup),
