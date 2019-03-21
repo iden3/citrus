@@ -3,10 +3,10 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
-	log "github.com/sirupsen/logrus"
-	"github.com/spf13/viper"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -17,16 +17,22 @@ import (
 	"syscall"
 	"time"
 
+	log "github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
+
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 )
 
-// const workDir = "/tmp/iden3-CIT"
-// const confDir = "/home/dev/git/iden3/continuous-integration-testing/tmp"
-// const port = "8010"
-// const loopTimeout = 60
-// const testTimeout = 120
-// const setupTimeout = 120
+type Result string
+
+const (
+	ResultUnk      Result = "UNK"
+	ResultPass     Result = "PASS"
+	ResultErr      Result = "ERR"
+	ResultReady    Result = "READY"
+	ResultReadyErr Result = "READYERR"
+)
 
 type ScriptCfg struct {
 	ReadyStr string
@@ -39,22 +45,29 @@ type Config struct {
 	ReposUrl []string `mapstructure:"repos"`
 	Timeouts struct {
 		Loop  int64
-		Test  int64
 		Setup int64
+		Ready int64
+		Test  int64
+		Stop  int64
 	}
 	ScriptsCfg map[string]map[string]ScriptCfg `mapstructure:"scripts"`
 }
 
 type Timeouts struct {
 	Loop  time.Duration
-	Test  time.Duration
 	Setup time.Duration
+	Ready time.Duration
+	Test  time.Duration
+	Stop  time.Duration
 }
 
 type Script struct {
 	Path     string
 	ReadyStr string
 	Cmd      *exec.Cmd
+	Result   Result
+	waitCh   chan error
+	// Running  bool
 }
 
 func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string,
@@ -77,6 +90,12 @@ func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string,
 	if err := s.Cmd.Start(); err != nil {
 		log.Fatal(err)
 	}
+	s.waitCh = make(chan error)
+	go func() {
+		// s.Running = true
+		s.waitCh <- s.Cmd.Wait()
+		// s.Running = false
+	}()
 	outFileName := fmt.Sprintf("%s.out.txt", path.Base(s.Path))
 	outputHandler(stdout, stderr, path.Join(outDir, outFileName), s.ReadyStr, readyCh)
 	// stdoutFileName := fmt.Sprintf("%s.stdout.txt", path.Base(s.Path))
@@ -86,43 +105,34 @@ func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string,
 }
 
 func (s *Script) Wait() error {
-	err := s.Cmd.Wait()
+	err := <-s.waitCh
 	log.Debugf("Finished %s with err: %v", s.Path, err)
 	return err
 }
 
-func (s *Script) Stop() (*os.ProcessState, error) {
-	if s.Cmd == nil || s.Cmd.Process == nil {
-		return nil, fmt.Errorf("Script Cmd or Cmd.Process is nil")
-	}
+func (s *Script) Stop() error {
 	defer func() { s.Cmd = nil }()
+	select {
+	case res := <-s.waitCh:
+		return fmt.Errorf("Script exited prematurely with error %v",
+			res)
+	case <-time.After(500 * time.Millisecond):
+
+	}
+
 	pgid, err := syscall.Getpgid(s.Cmd.Process.Pid)
 	if err != nil {
-		return nil, fmt.Errorf("Unable to get script process pgid")
+		return fmt.Errorf("Unable to get script process pgid")
 	}
 	if err := syscall.Kill(-pgid, syscall.SIGINT); err != nil {
-		return nil, err
+		return err
 	}
-	wait := make(chan struct {
-		ps  *os.ProcessState
-		err error
-	})
-	go func() {
-		ps, err := s.Cmd.Process.Wait()
-		wait <- struct {
-			ps  *os.ProcessState
-			err error
-		}{ps, err}
-	}()
 	select {
-	case res := <-wait:
-		if res.err != nil {
-			return nil, res.err
-		}
-		return res.ps, nil
+	case <-s.waitCh:
+		return nil
 	case <-time.After(30 * time.Second):
 		syscall.Kill(-pgid, syscall.SIGKILL)
-		return nil, fmt.Errorf("Script took more than 30 seconds to terminate, killed")
+		return fmt.Errorf("Script took more than 30 seconds to terminate, killed")
 	}
 }
 
@@ -169,6 +179,7 @@ type Repos struct {
 	OutDir   string
 	Scripts  Scripts
 	Timeouts Timeouts
+	Result   Result
 }
 
 func NewRepos(confDir, outDir, reposDir string, reposUrl []string,
@@ -208,10 +219,11 @@ func NewRepos(confDir, outDir, reposDir string, reposUrl []string,
 			if strings.HasPrefix(file.Name(), "setup") {
 				scripts.Setup = &Script{Path: filePath}
 			} else if strings.HasPrefix(file.Name(), "start") {
-				script := Script{Path: filePath}
-				if cfg != nil {
-					script.ReadyStr = cfg[file.Name()].ReadyStr
+				if cfg == nil || cfg[file.Name()].ReadyStr == "" {
+					log.Fatalf("Start %v -> %v hasn't specified a readystr", repo.Name(), filePath)
 				}
+				script := Script{Path: filePath}
+				script.ReadyStr = cfg[file.Name()].ReadyStr
 				scripts.Start = append(scripts.Start, &script)
 			} else if strings.HasPrefix(file.Name(), "test") {
 				scripts.Test = append(scripts.Test, &Script{Path: filePath})
@@ -297,7 +309,6 @@ func outputHandler(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 			line, err := reader.ReadString('\n')
 			lineCh <- line
 			if err != nil {
-				// log.Debugf("DBG readLine %v", err)
 				break
 			}
 		}
@@ -316,7 +327,6 @@ func outputHandler(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 				readyCh <- true
 				ready = true
 			}
-			// log.Debugf("DBG %v: %v", filePath, line)
 			_, err := io.WriteString(f, line)
 			if err != nil {
 				log.Fatalf("Can't write output to file %v: %v", filePath, err)
@@ -330,12 +340,54 @@ func outputHandler(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 	}
 }
 
-func (rs *Repos) Run() {
-	now := time.Now()
-	ts := fmt.Sprintf("%08d_%s", now.Unix(), now.Format(time.RFC3339))
-	outDir := path.Join(rs.OutDir, ts)
+func (rs *Repos) ClearResults() {
+	clearScripts := func(s *Scripts) {
+		if s.Setup != nil {
+			s.Setup.Result = ResultUnk
+		}
+		for _, script := range s.Start {
+			script.Result = ResultUnk
+		}
+		for _, script := range s.Test {
+			script.Result = ResultUnk
+		}
+		if s.Stop != nil {
+			s.Stop.Result = ResultUnk
+		}
+	}
+	clearScripts(&rs.Scripts)
+	for _, repo := range rs.Repos {
+		clearScripts(&repo.Scripts)
+	}
+	rs.Result = ResultUnk
+}
 
-	// Setup
+func (rs *Repos) Run() {
+	info := rs.NewInfo()
+	ts := fmt.Sprintf("%s_%s", info.Ts, info.TsRFC3339)
+	outDir := path.Join(rs.OutDir, ts)
+	if err := os.MkdirAll(outDir, 0700); err != nil {
+		log.Fatal(err)
+	}
+	if err := rs.StoreInfo(&info, outDir); err != nil {
+		log.Fatal(err)
+	}
+	rs.ClearResults()
+
+	rs.run(&info, outDir)
+
+	log.Infof("Tests %s_%s result: %s", info.Ts, info.TsRFC3339, rs.Result)
+
+	rs.PrintResults()
+	mapResult := rs.NewMapResult()
+	if err := rs.StoreMapResult(&mapResult, outDir); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func (rs *Repos) run(info *Info, outDir string) {
+
+	//// Setup
 	log.Infof("--- Setup ---")
 	ctxSetup, cancelSetup := context.WithTimeout(context.Background(),
 		rs.Timeouts.Setup*time.Second)
@@ -343,9 +395,17 @@ func (rs *Repos) Run() {
 	rs.Scripts.Setup.Run(ctxSetup, rs.Scripts.PreludePath, "", outDir, nil)
 	if err := rs.Scripts.Setup.Wait(); err != nil {
 		log.Errorf("Scripts.Setup error: %v", err)
+		rs.Scripts.Setup.Result = ResultErr
+		rs.Result = ResultErr
+		return
 	}
+	rs.Scripts.Setup.Result = ResultPass
+
 	for _, repo := range rs.Repos {
 		script := repo.Scripts.Setup
+		if script == nil {
+			continue
+		}
 		ctx, cancel := context.WithTimeout(context.Background(),
 			rs.Timeouts.Setup*time.Second)
 		defer cancel()
@@ -354,10 +414,14 @@ func (rs *Repos) Run() {
 		if err := script.Wait(); err != nil {
 			log.Errorf("Setup %v -> %v finished with error: %v",
 				repo.Name(), script.Path, err)
+			script.Result = ResultErr
+			rs.Result = ResultErr
+			return
 		}
+		script.Result = ResultPass
 	}
 
-	// Start
+	//// Start
 	log.Infof("--- Start ---")
 	ctxStart, cancelStart := context.WithCancel(context.Background())
 	defer cancelStart()
@@ -372,51 +436,283 @@ func (rs *Repos) Run() {
 				s.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
 					path.Join(outDir, repoName), readyCh)
 			}()
-			<-readyCh
+			select {
+			case <-readyCh:
+				script.Result = ResultReady
+			case <-time.After(rs.Timeouts.Ready * time.Second):
+				cancel()
+				log.Errorf("Start %v -> %v timed out at ready",
+					repo.Name(), script.Path)
+				script.Result = ResultErr
+				rs.Result = ResultReadyErr
+			}
 			log.Debugf("Start %v -> %v is ready", repo.Name(), script.Path)
 		}
 	}
 
-	// Test
-	log.Infof("--- Test ---")
-	for _, repo := range rs.Repos {
-		for _, script := range repo.Scripts.Test {
-			ctx, cancel := context.WithTimeout(context.Background(),
-				rs.Timeouts.Test*time.Second)
-			defer cancel()
-			script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
-				path.Join(outDir, repo.Name()), nil)
-			if err := script.Wait(); err != nil {
-				log.Errorf("Test %v -> %v finished with error: %v",
-					repo.Name(), script.Path, err)
+	//// Test
+	if rs.Result == ResultUnk {
+		log.Infof("--- Test ---")
+		for _, repo := range rs.Repos {
+			for _, script := range repo.Scripts.Test {
+				ctx, cancel := context.WithTimeout(context.Background(),
+					rs.Timeouts.Test*time.Second)
+				defer cancel()
+				script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
+					path.Join(outDir, repo.Name()), nil)
+				if err := script.Wait(); err != nil {
+					log.Errorf("Test %v -> %v finished with error: %v",
+						repo.Name(), script.Path, err)
+					script.Result = ResultErr
+					rs.Result = ResultErr
+				} else {
+					script.Result = ResultPass
+				}
 			}
 		}
 	}
 
-	// Stop
-	time.Sleep(10 * time.Second)
+	//// Stop
 	log.Infof("--- Stop ---")
+	ctxStop, cancelStop := context.WithTimeout(context.Background(),
+		rs.Timeouts.Stop*time.Second)
+	defer cancelStop()
+	rs.Scripts.Stop.Run(ctxStop, rs.Scripts.PreludePath, "", outDir, nil)
+	if err := rs.Scripts.Stop.Wait(); err != nil {
+		log.Errorf("Scripts.Stop error: %v", err)
+		rs.Scripts.Stop.Result = ResultErr
+		rs.Result = ResultErr
+		return
+	}
+	rs.Scripts.Stop.Result = ResultPass
+
+	// Stop Start scripts
 	for _, repo := range rs.Repos {
 		for _, script := range repo.Scripts.Start {
-			_, err := script.Stop()
-			if err != nil {
+			// TODO: Check if start script stopped earlier
+			if err := script.Stop(); err != nil {
 				log.Errorf("Error stopping Start %v -> %v: %v", repo.Name(),
 					script.Path, err)
+				script.Result = ResultErr
+				rs.Result = ResultErr
+			} else {
+				script.Result = ResultPass
 			}
 		}
+	}
+
+	for _, repo := range rs.Repos {
+		script := repo.Scripts.Stop
+		if script == nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(),
+			rs.Timeouts.Stop*time.Second)
+		defer cancel()
+		script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
+			path.Join(outDir, repo.Name()), nil)
+		if err := script.Wait(); err != nil {
+			log.Errorf("Stop %v -> %v finished with error: %v",
+				repo.Name(), script.Path, err)
+			script.Result = ResultErr
+			rs.Result = ResultErr
+		} else {
+			script.Result = ResultPass
+		}
+	}
+	if rs.Result == ResultUnk {
+		rs.Result = ResultPass
+	}
+
+	return
+}
+
+func (rs *Repos) PrintResults() {
+	printOne := func(s *Script) {
+		res := "UNK "
+		switch s.Result {
+		case ResultPass:
+			res = "PASS"
+		case ResultErr:
+			res = "ERR "
+		}
+		fmt.Printf("%v - %v\n", res, strings.TrimPrefix(s.Path, rs.ConfDir))
+	}
+	printLoop := func(ss []*Script) {
+		for _, s := range ss {
+			printOne(s)
+		}
+	}
+	printMaybe := func(s *Script) {
+		if s != nil {
+			printOne(s)
+		}
+	}
+	fmt.Println("=== Setup ===")
+	printMaybe(rs.Scripts.Setup)
+	for _, r := range rs.Repos {
+		fmt.Printf("= %v =\n", r.Name())
+		printMaybe(r.Scripts.Setup)
+	}
+	fmt.Println("=== Start ===")
+	for _, r := range rs.Repos {
+		fmt.Printf("= %v =\n", r.Name())
+		printLoop(r.Scripts.Start)
+	}
+	fmt.Println("=== Test ===")
+	for _, r := range rs.Repos {
+		fmt.Printf("= %v =\n", r.Name())
+		printLoop(r.Scripts.Test)
+	}
+	fmt.Println("=== Stop ===")
+	printMaybe(rs.Scripts.Stop)
+	for _, r := range rs.Repos {
+		fmt.Printf("= %v =\n", r.Name())
+		printMaybe(r.Scripts.Stop)
 	}
 }
 
-func (rs *Repos) UpdateLoop() {
-	rs.Run()
-	for {
-		time.Sleep(rs.Timeouts.Loop * time.Second)
-		updated, err := rs.Update()
+type MapResult struct {
+	Result Result
+	Setup  struct {
+		Result *Result
+		Repos  map[string]Result
+	}
+	Start struct {
+		// Result *Result
+		Repos map[string]map[string]Result
+	}
+	Test struct {
+		// Result *Result
+		Repos map[string]map[string]Result
+	}
+	Stop struct {
+		Result *Result
+		Repos  map[string]Result
+	}
+}
+
+func (rs *Repos) NewMapResult() MapResult {
+	getSingle := func(s *Script) *Result {
+		if s != nil {
+			res := s.Result
+			return &res
+		}
+		return nil
+	}
+	getRepoSingle := func(repos []*Repo, phase string) map[string]Result {
+		m := make(map[string]Result)
+		for _, repo := range rs.Repos {
+			var script *Script
+			switch phase {
+			case "setup":
+				script = repo.Scripts.Setup
+			case "stop":
+				script = repo.Scripts.Stop
+			}
+			if script != nil {
+				m[repo.Name()] = script.Result
+			}
+		}
+		return m
+	}
+	getRepoMulti := func(repos []*Repo, phase string) map[string]map[string]Result {
+		m := make(map[string]map[string]Result)
+		for _, repo := range rs.Repos {
+			var scripts []*Script
+			switch phase {
+			case "start":
+				scripts = repo.Scripts.Start
+			case "test":
+				scripts = repo.Scripts.Test
+			}
+			ms := make(map[string]Result)
+			for _, s := range scripts {
+				scriptName := strings.TrimPrefix(strings.TrimPrefix(s.Path, rs.ConfDir), "/")
+				ms[scriptName] = s.Result
+			}
+			if len(ms) != 0 {
+				m[repo.Name()] = ms
+			}
+		}
+		return m
+	}
+	var result MapResult
+	result.Setup.Result = getSingle(rs.Scripts.Setup)
+	result.Setup.Repos = getRepoSingle(rs.Repos, "setup")
+	result.Start.Repos = getRepoMulti(rs.Repos, "start")
+	result.Test.Repos = getRepoMulti(rs.Repos, "test")
+	result.Stop.Result = getSingle(rs.Scripts.Stop)
+	result.Stop.Repos = getRepoSingle(rs.Repos, "stop")
+	result.Result = rs.Result
+
+	return result
+}
+
+func (rs *Repos) StoreMapResult(result *MapResult, outDir string) error {
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	if err := ioutil.WriteFile(path.Join(outDir, "result.json"), resultJSON, 0600); err != nil {
+		return err
+	}
+	return nil
+}
+
+type InfoRepo struct {
+	CommitHash string
+	Branch     string
+}
+
+type Info struct {
+	Repos     map[string]InfoRepo
+	Ts        string
+	TsRFC3339 string
+}
+
+func (rs *Repos) NewInfo() Info {
+	var info Info
+	info.Repos = make(map[string]InfoRepo)
+	now := time.Now()
+	info.Ts = fmt.Sprintf("%08d", now.Unix())
+	info.TsRFC3339 = now.Format(time.RFC3339)
+	for _, repo := range rs.Repos {
+		hash, err := repo.HeadHash()
 		if err != nil {
 			log.Fatal(err)
 		}
+		info.Repos[repo.URL] = InfoRepo{
+			CommitHash: hex.EncodeToString(hash[:]),
+			Branch:     "master", // TODO: Support branches different than master
+		}
+	}
+	return info
+}
+
+func (rs *Repos) StoreInfo(info *Info, outDir string) error {
+	infoJSON, err := json.Marshal(info)
+	if err != nil {
+		return err
+	}
+	if err := ioutil.WriteFile(path.Join(outDir, "info.json"), infoJSON, 0600); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (rs *Repos) UpdateLoop() {
+	var err error
+	updated := true
+	for {
 		if updated {
 			rs.Run()
+			// rs.PrintResults()
+		}
+		time.Sleep(rs.Timeouts.Loop * time.Second)
+		updated, err = rs.Update()
+		if err != nil {
+			log.Fatal(err)
 		}
 	}
 }
@@ -461,7 +757,7 @@ func main() {
 		log.Fatal(err)
 	}
 	cfg.ConfDir = *confDir
-	fmt.Printf("%#v\n", cfg)
+	// fmt.Printf("%#v\n", cfg)
 
 	if err := os.MkdirAll(cfg.WorkDir, 0700); err != nil {
 		log.Fatal(err)
@@ -480,7 +776,9 @@ func main() {
 		Timeouts{
 			Loop:  time.Duration(cfg.Timeouts.Loop),
 			Setup: time.Duration(cfg.Timeouts.Setup),
+			Ready: time.Duration(cfg.Timeouts.Ready),
 			Test:  time.Duration(cfg.Timeouts.Test),
+			Stop:  time.Duration(cfg.Timeouts.Stop),
 		},
 	)
 	if err != nil {

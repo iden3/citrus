@@ -9,9 +9,11 @@ repos = [
 ]
 
 [timeouts]
-loop = 60
+loop = 600
+ready = 60
 test = 120
 setup = 120
+stop = 120
 
 [scripts.go-iden3.start_nameserver]
 readystr = "API server at"
