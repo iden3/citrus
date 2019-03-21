@@ -1,0 +1,117 @@
+{{ $outDir := printf "/out/%s" .infoRes.Info.Ts }}
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Citrus Test Result</title>
+    <link href="/static/style.css" rel="stylesheet" media="all">
+  </head>
+<html>
+<body>
+
+  <div class="center">
+    <h1>Citrus Test Result</h1>
+  </div>
+
+  <h2>Info</h2>
+  Time: {{ .infoRes.Info.TsRFC3339 }}
+  <ul>
+    {{ range $index, $infoRepo := .infoRes.Info.Repos }}
+    <li> <strong>{{ $infoRepo.URL }}</strong>
+          {{ $infoRepo.Branch }}
+          {{ $infoRepo.CommitHash }}
+    </li>
+    {{ end }}
+  </ul>
+
+  <h2>Scripts Results</h2>
+  {{ if .infoRes.Res }}
+    Full:  {{ .Result }}
+
+    <h3>Setup</h3>
+
+    {{ if .infoRes.Res.Setup.Result }}
+      <li>
+        <a href="{{ $outDir }}/setup.out.txt">
+          <strong>global</strong>
+        </a>
+        {{ .infoRes.Res.Setup.Result }}
+      </li>
+    {{ end }}
+    <ul>
+      {{ range $name, $result := .infoRes.Res.Setup.Repos }}
+      <li>
+        <a href="{{ $outDir }}/{{ $name }}/setup.out.txt">
+          <strong>{{ $name }}</strong>
+        </a>
+        {{ $result }}
+      </li>
+      {{ end }}
+    </ul>
+
+    <h3>Start</h3>
+
+    <ul>
+      {{ range $name, $scripts := .infoRes.Res.Start.Repos }}
+      <li> <strong>{{ $name }}</strong>
+          <ul>
+            {{ range $script, $result := $scripts }}
+            <li>
+              <a href="{{ $outDir }}/{{ $script }}.out.txt">
+                <strong>{{ $script }}</strong>
+              </a>
+              {{ $result }}
+            </li>
+            {{ end }}
+          </ul>
+      </li>
+      {{ end }}
+    </ul>
+
+    <h3>Test</h3>
+
+    <ul>
+      {{ range $name, $scripts := .infoRes.Res.Test.Repos }}
+      <li> <strong>{{ $name }}</strong>
+          <ul>
+            {{ range $script, $result := $scripts }}
+            <li> 
+              <a href="{{ $outDir }}/{{ $script }}.out.txt">
+                <strong>{{ $script }}</strong>
+              </a>
+              {{ $result }}
+            </li>
+            {{ end }}
+          </ul>
+      </li>
+      {{ end }}
+    </ul>
+
+    <h3>Stop</h3>
+
+    <ul>
+    {{ if .infoRes.Res.Stop.Result }}
+      <li>
+        <a href="{{ $outDir }}/stop.out.txt">
+          <strong>global</strong>
+        </a>
+        {{ .infoRes.Res.Stop.Result }}
+      </li>
+    {{ end }}
+      {{ range $name, $result := .infoRes.Res.Stop.Repos }}
+      <li>
+        <a href="{{ $outDir }}/{{ $name }}/stop.out.txt">
+          <strong>{{ $name }}</strong>
+        </a>
+        {{ $result }}
+      </li>
+      {{ end }}
+    </ul>
+  {{ else }}
+    Running...
+  {{ end }}
+
+</body>
+</html>
+

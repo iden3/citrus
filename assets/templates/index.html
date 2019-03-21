@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Citrus Results</title>
+    <link href="/static/style.css" rel="stylesheet" media="all">
+  </head>
+<html>
+<body>
+
+  <div class="center">
+    <h1>Citrus Results</h1>
+  </div>
+
+  <ul>
+    {{ range $index, $infoRes := .tests }}
+    <li><a href="/result/{{ $infoRes.Info.Ts }}">
+        <strong>{{ $infoRes.Info.TsRFC3339 }}</strong>
+        {{ if $infoRes.Res }}
+          {{ $infoRes.Res.Result }}
+        {{ else }}
+          Running
+        {{ end }}
+      </a>
+    </li>
+    {{ end }}
+  </ul>
+
+</body>
+</html>

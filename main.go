@@ -10,6 +10,10 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+
+	"github.com/gin-gonic/gin"
+
+	// "net/http"
 	"os"
 	"os/exec"
 	"path"
@@ -98,11 +102,7 @@ func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string,
 		// s.Running = false
 	}()
 	outFileName := fmt.Sprintf("%s.out.txt", path.Base(s.Path))
-	outputHandler(stdout, stderr, path.Join(outDir, outFileName), s.ReadyStr, readyCh)
-	// stdoutFileName := fmt.Sprintf("%s.stdout.txt", path.Base(s.Path))
-	// go writeOutFile(stdout, path.Join(outDir, stdoutFileName))
-	// stderrFileName := fmt.Sprintf("%s.stderr.txt", path.Base(s.Path))
-	// go writeOutFile(stderr, path.Join(outDir, stderrFileName))
+	outputWrite(stdout, stderr, path.Join(outDir, outFileName), s.ReadyStr, readyCh)
 }
 
 func (s *Script) Wait() error {
@@ -281,23 +281,9 @@ func (rs *Repos) Update() (bool, error) {
 	return updated, nil
 }
 
-func writeOutFile(out io.ReadCloser, filePath string) {
-	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0650)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-	if _, err := io.Copy(f, out); err != nil {
-		pathErr, ok := err.(*os.PathError)
-		if !(ok && pathErr.Op == "read") {
-			log.Fatalf("%#v", err)
-		}
-	}
-}
-
-func outputHandler(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
+func outputWrite(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 	readyStr string, readyCh chan bool) {
-	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0650)
+	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -369,25 +355,14 @@ func (rs *Repos) ArchiveOld() {
 	if err := os.MkdirAll(archiveDir, 0700); err != nil {
 		log.Fatal(err)
 	}
-	files, err := ioutil.ReadDir(rs.OutDir)
+	resultDirs, err := getResultsDir(rs.OutDir)
 	if err != nil {
 		log.Fatal(err)
-	}
-	resultDirs := make([]string, 0, len(files))
-	for _, file := range files {
-		if file.Name() == "archive" {
-			continue
-		}
-		if !file.IsDir() {
-			continue
-		}
-		resultDirs = append(resultDirs, file.Name())
 	}
 	if len(resultDirs) <= curLen {
 		return
 	}
-	sort.Strings(resultDirs)
-	for _, file := range resultDirs[:len(resultDirs)-curLen] {
+	for _, file := range resultDirs[curLen:] {
 		if err := os.Rename(path.Join(rs.OutDir, file), path.Join(archiveDir, file)); err != nil {
 			log.Fatal(err)
 		}
@@ -396,8 +371,7 @@ func (rs *Repos) ArchiveOld() {
 
 func (rs *Repos) Run() {
 	info := rs.NewInfo()
-	ts := fmt.Sprintf("%s_%s", info.Ts, info.TsRFC3339)
-	outDir := path.Join(rs.OutDir, ts)
+	outDir := path.Join(rs.OutDir, info.Ts)
 	if err := os.MkdirAll(outDir, 0700); err != nil {
 		log.Fatal(err)
 	}
@@ -408,7 +382,7 @@ func (rs *Repos) Run() {
 
 	rs.run(&info, outDir)
 
-	log.Infof("Tests %s_%s result: %s", info.Ts, info.TsRFC3339, rs.Result)
+	log.Infof("Tests %s (%s) result: %s", info.Ts, info.TsRFC3339, rs.Result)
 
 	rs.PrintResults()
 	mapResult := rs.NewMapResult()
@@ -640,6 +614,7 @@ func (rs *Repos) NewMapResult() MapResult {
 			var script *Script
 			switch phase {
 			case "setup":
+
 				script = repo.Scripts.Setup
 			case "stop":
 				script = repo.Scripts.Stop
@@ -697,17 +672,18 @@ func (rs *Repos) StoreMapResult(result *MapResult, outDir string) error {
 type InfoRepo struct {
 	CommitHash string
 	Branch     string
+	URL        string
 }
 
 type Info struct {
-	Repos     map[string]InfoRepo
+	Repos     []InfoRepo
 	Ts        string
 	TsRFC3339 string
 }
 
 func (rs *Repos) NewInfo() Info {
 	var info Info
-	info.Repos = make(map[string]InfoRepo)
+	info.Repos = make([]InfoRepo, 0, len(rs.Repos))
 	now := time.Now()
 	info.Ts = fmt.Sprintf("%08d", now.Unix())
 	info.TsRFC3339 = now.Format(time.RFC3339)
@@ -716,10 +692,11 @@ func (rs *Repos) NewInfo() Info {
 		if err != nil {
 			log.Fatal(err)
 		}
-		info.Repos[repo.URL] = InfoRepo{
+		info.Repos = append(info.Repos, InfoRepo{
 			CommitHash: hex.EncodeToString(hash[:]),
 			Branch:     "master", // TODO: Support branches different than master
-		}
+			URL:        repo.URL,
+		})
 	}
 	return info
 }
@@ -751,9 +728,69 @@ func (rs *Repos) UpdateLoop() {
 	}
 }
 
+func ginFail(c *gin.Context, msg string, err error) {
+	if err != nil {
+		log.WithError(err).Error(msg)
+	} else {
+		log.Error(msg)
+	}
+	c.JSON(400, gin.H{
+		"error": fmt.Sprintf("%s: %v", msg, err),
+	})
+	return
+}
+
 func printUsage() {
 	fmt.Printf("Usage of %s:\n", os.Args[0])
 	flag.PrintDefaults()
+}
+
+func getResultsDir(outDir string) ([]string, error) {
+	files, err := ioutil.ReadDir(outDir)
+	if err != nil {
+		return nil, err
+	}
+	resultDirs := make([]string, 0, len(files))
+	for _, file := range files {
+		if file.Name() == "archive" {
+			continue
+		}
+		if !file.IsDir() {
+			continue
+		}
+		resultDirs = append(resultDirs, file.Name())
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(resultDirs)))
+	return resultDirs, nil
+}
+
+type InfoRes struct {
+	Info Info
+	Res  *MapResult
+}
+
+func getInfoRes(dir string) (*InfoRes, error) {
+	var infoRes InfoRes
+	infoFile, err := os.Open(path.Join(dir, "info.json"))
+	if err != nil {
+		return nil, nil
+	}
+	defer infoFile.Close()
+	var info Info
+	if err := json.NewDecoder(infoFile).Decode(&info); err != nil {
+		return nil, err
+	}
+	infoRes.Info = info
+	resultFile, err := os.Open(path.Join(dir, "result.json"))
+	if err == nil {
+		defer resultFile.Close()
+		var result MapResult
+		if err := json.NewDecoder(resultFile).Decode(&result); err != nil {
+			return nil, err
+		}
+		infoRes.Res = &result
+	}
+	return &infoRes, nil
 }
 
 func main() {
@@ -821,8 +858,58 @@ func main() {
 
 	go repos.UpdateLoop()
 
-	http.Handle("/", http.FileServer(http.Dir(cfg.WorkDir)))
+	// http.Handle("/", http.FileServer(http.Dir(cfg.WorkDir)))
 
-	log.Infof("Serving %s on http://%s", cfg.WorkDir, cfg.Listen)
-	log.Fatal(http.ListenAndServe(cfg.Listen, nil))
+	// log.Infof("Serving %s on http://%s", cfg.WorkDir, cfg.Listen)
+	// log.Fatal(http.ListenAndServe(cfg.Listen, nil))
+
+	router := gin.Default()
+	router.LoadHTMLGlob(path.Join(wd, "assets", "templates", "*"))
+	router.Static("static", path.Join(wd, "assets", "static"))
+	router.Static("out", outDir)
+
+	router.GET("/", func(c *gin.Context) {
+		resultDirs, err := getResultsDir(outDir)
+		if err != nil {
+			ginFail(c, "", err)
+		}
+		tests := make([]InfoRes, 0, len(resultDirs))
+		for _, resultDir := range resultDirs {
+			dir := path.Join(outDir, resultDir)
+			infoRes, err := getInfoRes(dir)
+			if err != nil {
+				ginFail(c, "", err)
+				return
+			}
+			if infoRes != nil {
+				tests = append(tests, *infoRes)
+			}
+		}
+		c.HTML(http.StatusOK, "index.html", gin.H{
+			"tests": tests,
+		})
+	})
+
+	router.GET("/result/:ts", func(c *gin.Context) {
+		ts := c.Param("ts")
+		if strings.Contains(ts, "/") || strings.Contains(ts, "..") {
+			ginFail(c, "", fmt.Errorf("ts contains \"/\" or \"..\""))
+			return
+		}
+		infoRes, err := getInfoRes(path.Join(outDir, ts))
+		if err != nil {
+			ginFail(c, "", err)
+			return
+		}
+		if infoRes == nil {
+			ginFail(c, "", fmt.Errorf("No info.json found"))
+			return
+		}
+		c.HTML(http.StatusOK, "result.html", gin.H{
+			"infoRes": *infoRes,
+		})
+	})
+
+	log.Infof("Listening on http://%s", cfg.Listen)
+	router.Run(cfg.Listen)
 }
