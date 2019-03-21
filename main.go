@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -362,6 +363,37 @@ func (rs *Repos) ClearResults() {
 	rs.Result = ResultUnk
 }
 
+func (rs *Repos) ArchiveOld() {
+	curLen := 16
+	archiveDir := path.Join(rs.OutDir, "archive")
+	if err := os.MkdirAll(archiveDir, 0700); err != nil {
+		log.Fatal(err)
+	}
+	files, err := ioutil.ReadDir(rs.OutDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	resultDirs := make([]string, 0, len(files))
+	for _, file := range files {
+		if file.Name() == "archive" {
+			continue
+		}
+		if !file.IsDir() {
+			continue
+		}
+		resultDirs = append(resultDirs, file.Name())
+	}
+	if len(resultDirs) <= curLen {
+		return
+	}
+	sort.Strings(resultDirs)
+	for _, file := range resultDirs[:len(resultDirs)-curLen] {
+		if err := os.Rename(path.Join(rs.OutDir, file), path.Join(archiveDir, file)); err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
 func (rs *Repos) Run() {
 	info := rs.NewInfo()
 	ts := fmt.Sprintf("%s_%s", info.Ts, info.TsRFC3339)
@@ -383,6 +415,8 @@ func (rs *Repos) Run() {
 	if err := rs.StoreMapResult(&mapResult, outDir); err != nil {
 		log.Fatal(err)
 	}
+
+	rs.ArchiveOld()
 }
 
 func (rs *Repos) run(info *Info, outDir string) {
