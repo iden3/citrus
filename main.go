@@ -269,6 +269,10 @@ func (rs *Repos) Update() (bool, error) {
 	updated := false
 	for _, repo := range rs.Repos {
 		repoUrl := repo.URL
+		oldHead, err := repo.HeadHash()
+		if err != nil {
+			return false, err
+		}
 		log.Infof("Updating %s", repoUrl)
 		wt, err := repo.GitRepo.Worktree()
 		if err != nil {
@@ -283,8 +287,6 @@ func (rs *Repos) Update() (bool, error) {
 			log.Infof("Repository %s already up-to-date", repoUrl)
 		} else if err != nil {
 			return false, err
-		} else {
-			updated = true
 		}
 
 		if err := wt.Checkout(&git.CheckoutOptions{
@@ -293,10 +295,12 @@ func (rs *Repos) Update() (bool, error) {
 		}); err != nil {
 			return false, err
 		}
-
 		head, err := repo.HeadHash()
 		if err != nil {
 			return false, err
+		}
+		if oldHead != head {
+			updated = true
 		}
 		log.Infof("Repository %s at commit %s", repoUrl, head)
 	}
