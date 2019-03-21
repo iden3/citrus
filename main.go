@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/viper"
 
 	"gopkg.in/src-d/go-git.v4"
+	"gopkg.in/src-d/go-git.v4/config"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 )
 
@@ -43,6 +44,10 @@ type ScriptCfg struct {
 	ReadyStr string
 }
 
+type RepoCfg struct {
+	Branch string
+}
+
 type Config struct {
 	WorkDir  string
 	ConfDir  string `mapstructure:"-"`
@@ -55,7 +60,8 @@ type Config struct {
 		Test  int64
 		Stop  int64
 	}
-	ScriptsCfg map[string]map[string]ScriptCfg `mapstructure:"scripts"`
+	ScriptsCfg map[string]map[string]ScriptCfg `mapstructure:"script"`
+	ReposCfg   map[string]RepoCfg              `mapstructure:"repo"`
 }
 
 type Timeouts struct {
@@ -148,6 +154,7 @@ type Scripts struct {
 type Repo struct {
 	GitRepo *git.Repository
 	URL     string
+	Branch  string
 	Scripts Scripts
 	OutDir  string
 	Dir     string
@@ -184,27 +191,33 @@ type Repos struct {
 }
 
 func NewRepos(confDir, outDir, reposDir string, reposUrl []string,
-	scriptsCfg map[string]map[string]ScriptCfg, timeouts Timeouts) (*Repos, error) {
+	scriptsCfg map[string]map[string]ScriptCfg, reposCfg map[string]RepoCfg,
+	timeouts Timeouts) (*Repos, error) {
 	repos := []*Repo{}
 	for _, repoUrl := range reposUrl {
 		name := repoUrl[strings.LastIndex(repoUrl, "/")+1:]
 		repoDir := path.Join(reposDir, name)
-		log.Infof("Cloning %s into %s", repoUrl, repoDir)
-		gitRepo, err := git.PlainClone(repoDir, false, &git.CloneOptions{
-			SingleBranch: true,
-			URL:          repoUrl,
-			Progress:     os.Stdout,
+		repo := Repo{URL: repoUrl, Branch: "master", Dir: repoDir}
+		if reposCfg[repo.Name()].Branch != "" {
+			repo.Branch = reposCfg[repo.Name()].Branch
+		}
+		log.Infof("Cloning %s into %s", repo.URL, repo.Dir)
+		gitRepo, err := git.PlainClone(repo.Dir, false, &git.CloneOptions{
+			URL: repo.URL,
+			// SingleBranch:  true,
+			ReferenceName: plumbing.NewBranchReferenceName(repo.Branch),
+			Progress:      os.Stdout,
 		})
 		if err == git.ErrRepositoryAlreadyExists {
-			log.Infof("Repository %s already exists", repoUrl)
-			gitRepo, err = git.PlainOpen(repoDir)
+			log.Infof("Repository %s already exists", repo.URL)
+			gitRepo, err = git.PlainOpen(repo.Dir)
 			if err != nil {
 				return nil, err
 			}
 		} else if err != nil {
 			return nil, err
 		}
-		repo := Repo{GitRepo: gitRepo, URL: repoUrl, Dir: repoDir}
+		repo.GitRepo = gitRepo
 
 		repoConfDir := path.Join(confDir, repo.Name())
 		files, err := ioutil.ReadDir(repoConfDir)
@@ -261,10 +274,11 @@ func (rs *Repos) Update() (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if err := wt.Pull(&git.PullOptions{
-			SingleBranch: true,
-			Progress:     os.Stdout,
-			Force:        true,
+
+		if err := repo.GitRepo.Fetch(&git.FetchOptions{
+			Force: true,
+			RefSpecs: []config.RefSpec{"refs/*:refs/*",
+				"HEAD:refs/heads/HEAD"},
 		}); err == git.NoErrAlreadyUpToDate {
 			log.Infof("Repository %s already up-to-date", repoUrl)
 		} else if err != nil {
@@ -272,6 +286,14 @@ func (rs *Repos) Update() (bool, error) {
 		} else {
 			updated = true
 		}
+
+		if err := wt.Checkout(&git.CheckoutOptions{
+			Branch: plumbing.NewBranchReferenceName(repo.Branch),
+			Force:  true,
+		}); err != nil {
+			return false, err
+		}
+
 		head, err := repo.HeadHash()
 		if err != nil {
 			return false, err
@@ -497,7 +519,6 @@ func (rs *Repos) run(info *Info, outDir string) {
 	// Stop Start scripts
 	for _, repo := range rs.Repos {
 		for _, script := range repo.Scripts.Start {
-			// TODO: Check if start script stopped earlier
 			if err := script.Stop(); err != nil {
 				log.Errorf("Error stopping Start %v -> %v: %v", repo.Name(),
 					script.Path, err)
@@ -694,7 +715,7 @@ func (rs *Repos) NewInfo() Info {
 		}
 		info.Repos = append(info.Repos, InfoRepo{
 			CommitHash: hex.EncodeToString(hash[:]),
-			Branch:     "master", // TODO: Support branches different than master
+			Branch:     repo.Branch,
 			URL:        repo.URL,
 		})
 	}
@@ -714,6 +735,10 @@ func (rs *Repos) StoreInfo(info *Info, outDir string) error {
 
 func (rs *Repos) UpdateLoop() {
 	var err error
+	_, err = rs.Update()
+	if err != nil {
+		log.Fatal(err)
+	}
 	updated := true
 	for {
 		if updated {
@@ -844,6 +869,7 @@ func main() {
 
 	repos, err := NewRepos(cfg.ConfDir, outDir, reposDir, cfg.ReposUrl,
 		cfg.ScriptsCfg,
+		cfg.ReposCfg,
 		Timeouts{
 			Loop:  time.Duration(cfg.Timeouts.Loop),
 			Setup: time.Duration(cfg.Timeouts.Setup),
@@ -900,6 +926,13 @@ func main() {
 		if err != nil {
 			ginFail(c, "", err)
 			return
+		}
+		if infoRes == nil {
+			infoRes, err = getInfoRes(path.Join(outDir, "archive", ts))
+			if err != nil {
+				ginFail(c, "", err)
+				return
+			}
 		}
 		if infoRes == nil {
 			ginFail(c, "", fmt.Errorf("No info.json found"))

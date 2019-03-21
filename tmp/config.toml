@@ -15,10 +15,13 @@ test = 120
 setup = 120
 stop = 120
 
-[scripts.go-iden3.start_nameserver]
+[script.go-iden3.start_nameserver]
 readystr = "API server at"
 
-[scripts.go-iden3.start_relay]
+[script.go-iden3.start_relay]
 readystr = "API server at"
 
+[repo.go-iden3]
+# branch = "feature/test2"
+branch = "master"
 
