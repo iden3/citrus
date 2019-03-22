@@ -101,7 +101,7 @@ textarea {
 }
 
 .READYERR {
-  color: #FF6347;
+  color: #FA8072;
 }
 
 .UNK {
@@ -110,6 +110,11 @@ textarea {
 
 .RUNNING {
   color: #4169E1;
+  animation: blinker 1s linear infinite;
+}
+
+@keyframes blinker {
+  50% { opacity: 0; }
 }
 
 /*

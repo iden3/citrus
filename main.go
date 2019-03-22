@@ -537,7 +537,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 	ctxStop, cancelStop := context.WithTimeout(context.Background(),
 		rs.Timeouts.Stop*time.Second)
 	defer cancelStop()
-	rs.Scripts.Setup.Result = ResultRun
+	rs.Scripts.Stop.Result = ResultRun
 	if err := rs.StoreMapResult(outDir); err != nil {
 		log.Fatal(err)
 	}
