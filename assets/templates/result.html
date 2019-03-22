@@ -1,4 +1,5 @@
-{{ $outDir := printf "/out/%s" .infoRes.Info.Ts }}
+{{ $outDir := printf "/out/%08d" .infoRes.Info.Ts }}
+{{ $time := .infoRes.Info.Ts | RFC1123 }}
 
 <!DOCTYPE html>
 <html lang="en">
@@ -14,38 +15,46 @@
     <h1>Citrus Test Result</h1>
   </div>
 
-  <h2>Info</h2>
-  Time: {{ .infoRes.Info.TsRFC3339 }}
-  <ul>
+  <h3>Snapshot from {{ $time }}</h3>
+  <table>
+    <thread>
+    <tr>
+      <th>Repository</th>
+      <th>Branch</th>
+      <th>Commit</th>
+    </tr>
+    </thread>
+    <tbody>
     {{ range $index, $infoRepo := .infoRes.Info.Repos }}
-    <li> <strong>{{ $infoRepo.URL }}</strong>
-          {{ $infoRepo.Branch }}
-          {{ $infoRepo.CommitHash }}
-    </li>
+    <tr>
+      <td><a href="{{ $infoRepo.URL }}">{{ $infoRepo.URL | RepoName }}</a></td>
+      <td>{{ $infoRepo.Branch }}</td>
+      <td><pre>{{ $infoRepo.CommitHash }}</pre></td>
+    </tr>
     {{ end }}
-  </ul>
+    </tbody>
+  </table>
 
-  <h2>Scripts Results</h2>
-  {{ if .infoRes.Res }}
-    Full:  {{ .infoRes.Res.Result }}
+  {{ with .infoRes.Res }}
+    <h2><div class="res {{ .Result }}">{{ .Result | Res2Icon }}</div> Scripts Results</h2>
 
     <h3>Setup</h3>
 
-    {{ if .infoRes.Res.Setup.Result }}
-      <li>
-        <a href="{{ $outDir }}/setup.out.txt">
-          <strong>global</strong>
-        </a>
-        {{ .infoRes.Res.Setup.Result }}
-      </li>
-    {{ end }}
     <ul>
-      {{ range $name, $result := .infoRes.Res.Setup.Repos }}
+      {{ with .Setup.Result }}
+        <li>
+          <div class="res {{ . }}">{{ . | Res2Icon }}</div>
+          <a href="{{ $outDir }}/setup.out.txt">
+            <strong>global</strong>
+          </a>
+        </li>
+      {{ end }}
+      {{ range $name, $result := .Setup.Repos }}
       <li>
+        <div class="res {{ $result }}">{{ $result | Res2Icon }}</div>
         <a href="{{ $outDir }}/{{ $name }}/setup.out.txt">
           <strong>{{ $name }}</strong>
         </a>
-        {{ $result }}
       </li>
       {{ end }}
     </ul>
@@ -53,15 +62,15 @@
     <h3>Start</h3>
 
     <ul>
-      {{ range $name, $scripts := .infoRes.Res.Start.Repos }}
+      {{ range $name, $scripts := .Start.Repos }}
       <li> <strong>{{ $name }}</strong>
           <ul>
             {{ range $script, $result := $scripts }}
             <li>
+              <div class="res {{ $result }}">{{ $result | Res2Icon }}</div>
               <a href="{{ $outDir }}/{{ $script }}.out.txt">
                 <strong>{{ $script }}</strong>
               </a>
-              {{ $result }}
             </li>
             {{ end }}
           </ul>
@@ -72,15 +81,15 @@
     <h3>Test</h3>
 
     <ul>
-      {{ range $name, $scripts := .infoRes.Res.Test.Repos }}
+      {{ range $name, $scripts := .Test.Repos }}
       <li> <strong>{{ $name }}</strong>
           <ul>
             {{ range $script, $result := $scripts }}
-            <li> 
+            <li>
+              <div class="res {{ $result }}">{{ $result | Res2Icon }}</div>
               <a href="{{ $outDir }}/{{ $script }}.out.txt">
                 <strong>{{ $script }}</strong>
               </a>
-              {{ $result }}
             </li>
             {{ end }}
           </ul>
@@ -91,24 +100,25 @@
     <h3>Stop</h3>
 
     <ul>
-    {{ if .infoRes.Res.Stop.Result }}
+    {{ with .Stop.Result }}
       <li>
+        <div class="res {{ . }}">{{ . | Res2Icon }}</div>
         <a href="{{ $outDir }}/stop.out.txt">
           <strong>global</strong>
         </a>
-        {{ .infoRes.Res.Stop.Result }}
       </li>
     {{ end }}
-      {{ range $name, $result := .infoRes.Res.Stop.Repos }}
+      {{ range $name, $result := .Stop.Repos }}
       <li>
+        <div class="res {{ $result }}">{{ $result | Res2Icon }}</div>
         <a href="{{ $outDir }}/{{ $name }}/stop.out.txt">
           <strong>{{ $name }}</strong>
         </a>
-        {{ $result }}
       </li>
       {{ end }}
     </ul>
   {{ else }}
+    <h2>Scripts Results</h2>
     Running...
   {{ end }}
 

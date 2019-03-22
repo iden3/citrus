@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"html/template"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -397,7 +398,7 @@ func (rs *Repos) ArchiveOld() {
 
 func (rs *Repos) Run() {
 	info := rs.NewInfo()
-	outDir := path.Join(rs.OutDir, info.Ts)
+	outDir := path.Join(rs.OutDir, fmt.Sprintf("%08d", info.Ts))
 	if err := os.MkdirAll(outDir, 0700); err != nil {
 		log.Fatal(err)
 	}
@@ -408,7 +409,7 @@ func (rs *Repos) Run() {
 
 	rs.run(&info, outDir)
 
-	log.Infof("Tests %s (%s) result: %s", info.Ts, info.TsRFC3339, rs.Result)
+	log.Infof("Tests %08d (%s) result: %s", info.Ts, info.TsRFC3339, rs.Result)
 
 	rs.PrintResults()
 	mapResult := rs.NewMapResult()
@@ -702,15 +703,19 @@ type InfoRepo struct {
 
 type Info struct {
 	Repos     []InfoRepo
-	Ts        string
+	Ts        int64
 	TsRFC3339 string
 }
+
+// func (i *Info) TsRFC1123() string {
+// 	return time.Unix(i.Ts, 0).Format(time.RFC1123)
+// }
 
 func (rs *Repos) NewInfo() Info {
 	var info Info
 	info.Repos = make([]InfoRepo, 0, len(rs.Repos))
 	now := time.Now()
-	info.Ts = fmt.Sprintf("%08d", now.Unix())
+	info.Ts = now.Unix()
 	info.TsRFC3339 = now.Format(time.RFC3339)
 	for _, repo := range rs.Repos {
 		hash, err := repo.HeadHash()
@@ -826,6 +831,7 @@ func main() {
 	confDir := flag.String("conf", "", "config directory")
 	debug := flag.Bool("debug", false, "enable debug output")
 	quiet := flag.Bool("quiet", false, "output warnings and errors only")
+	test := flag.Bool("test", false, "run web backend only")
 	flag.Parse()
 	if *confDir == "" {
 		printUsage()
@@ -871,22 +877,24 @@ func main() {
 		log.Fatal(err)
 	}
 
-	repos, err := NewRepos(cfg.ConfDir, outDir, reposDir, cfg.ReposUrl,
-		cfg.ScriptsCfg,
-		cfg.ReposCfg,
-		Timeouts{
-			Loop:  time.Duration(cfg.Timeouts.Loop),
-			Setup: time.Duration(cfg.Timeouts.Setup),
-			Ready: time.Duration(cfg.Timeouts.Ready),
-			Test:  time.Duration(cfg.Timeouts.Test),
-			Stop:  time.Duration(cfg.Timeouts.Stop),
-		},
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
+	if !*test {
+		repos, err := NewRepos(cfg.ConfDir, outDir, reposDir, cfg.ReposUrl,
+			cfg.ScriptsCfg,
+			cfg.ReposCfg,
+			Timeouts{
+				Loop:  time.Duration(cfg.Timeouts.Loop),
+				Setup: time.Duration(cfg.Timeouts.Setup),
+				Ready: time.Duration(cfg.Timeouts.Ready),
+				Test:  time.Duration(cfg.Timeouts.Test),
+				Stop:  time.Duration(cfg.Timeouts.Stop),
+			},
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
 
-	go repos.UpdateLoop()
+		go repos.UpdateLoop()
+	}
 
 	// http.Handle("/", http.FileServer(http.Dir(cfg.WorkDir)))
 
@@ -894,6 +902,28 @@ func main() {
 	// log.Fatal(http.ListenAndServe(cfg.Listen, nil))
 
 	router := gin.Default()
+	router.SetFuncMap(template.FuncMap{
+		"RFC1123": func(t int64) string {
+			return time.Unix(t, 0).Format(time.RFC1123)
+		},
+		"RepoName": func(url string) string {
+			return url[strings.LastIndex(url, "/")+1:]
+		},
+		"Res2Icon": func(res Result) string {
+			switch res {
+			case ResultErr:
+				return "☒"
+			case ResultPass:
+				return "☑"
+			default:
+				return "♨"
+			}
+		},
+		"ResultUnk": func() Result {
+			return ResultUnk
+		},
+	})
+
 	router.LoadHTMLGlob(path.Join(wd, "assets", "templates", "*"))
 	router.Static("static", path.Join(wd, "assets", "static"))
 	router.Static("out", outDir)

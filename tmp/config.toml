@@ -9,7 +9,7 @@ repos = [
 ]
 
 [timeouts]
-loop = 20
+loop = 600
 ready = 60
 test = 120
 setup = 120

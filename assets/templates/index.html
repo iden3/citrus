@@ -14,13 +14,14 @@
 
   <ul>
     {{ range $index, $infoRes := .tests }}
-    <li><a href="/result/{{ $infoRes.Info.Ts }}">
-        <strong>{{ $infoRes.Info.TsRFC3339 }}</strong>
-        {{ if $infoRes.Res }}
-          {{ $infoRes.Res.Result }}
-        {{ else }}
-          Running
-        {{ end }}
+    <li>
+      {{ $res := ResultUnk }}
+      {{ if $infoRes.Res }}
+        {{ $res = $infoRes.Res.Result }}
+      {{ end }}
+      <div class="res {{ $res }}">{{ $res | Res2Icon }}</div>
+      <a href="/result/{{ $infoRes.Info.Ts }}">
+        <strong>{{ $infoRes.Info.Ts | RFC1123 }}</strong>
       </a>
     </li>
     {{ end }}
