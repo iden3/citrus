@@ -1,1 +1,3 @@
 #!/bin/sh
+mongo iden3-backupserver --eval "db.dropDatabase()"
+go get ./...

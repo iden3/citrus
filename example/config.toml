@@ -3,14 +3,14 @@ listen = "127.0.0.1:8010"
 
 repos = [
     "https://github.com/iden3/go-iden3.git",
-    "https://github.com/iden3/iden3js.git",
     "https://github.com/iden3/notifications-server.git",
     "https://github.com/iden3/tx-forwarder.git",
+    "https://github.com/iden3/iden3js.git",
 ]
 
 [timeouts]
 loop = 600
-ready = 60
+ready = 30
 test = 120
 setup = 120
 stop = 120
@@ -19,6 +19,18 @@ stop = 120
 readystr = "API server at"
 
 [script.go-iden3.start_relay]
+readystr = "API server at"
+
+[script.go-iden3.start_backupserver]
+readystr = "API server at"
+
+[script.go-iden3.start_claimserver]
+readystr = "API server at"
+
+[script.notifications-server.start_notificationserver]
+readystr = "API server at"
+
+[script.tx-forwarder.start_txforwarder]
 readystr = "API server at"
 
 [repo.go-iden3]

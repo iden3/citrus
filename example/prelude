@@ -1,5 +1,13 @@
 #!/bin/sh
 
+set -ex
+
+cat << EOF > /tmp/goiden3conf.sh
+IDEN3PATH="/tmp/iden3-CIT/git"
+LISTEN_ADDR="127.0.0.1"
+EOF
+
+export CONFFILE="/tmp/goiden3conf.sh"
 export GOIDEN3RUN="/home/dev/git/iden3/private-configs/run.sh"
 
-exec $@
+. $1

@@ -39,6 +39,7 @@ const (
 	ResultErr      Result = "ERR"
 	ResultReady    Result = "READY"
 	ResultReadyErr Result = "READYERR"
+	ResultRun      Result = "RUNNING"
 )
 
 type ScriptCfg struct {
@@ -412,8 +413,7 @@ func (rs *Repos) Run() {
 	log.Infof("Tests %08d (%s) result: %s", info.Ts, info.TsRFC3339, rs.Result)
 
 	rs.PrintResults()
-	mapResult := rs.NewMapResult()
-	if err := rs.StoreMapResult(&mapResult, outDir); err != nil {
+	if err := rs.StoreMapResult(outDir); err != nil {
 		log.Fatal(err)
 	}
 
@@ -427,6 +427,10 @@ func (rs *Repos) run(info *Info, outDir string) {
 	ctxSetup, cancelSetup := context.WithTimeout(context.Background(),
 		rs.Timeouts.Setup*time.Second)
 	defer cancelSetup()
+	rs.Scripts.Setup.Result = ResultRun
+	if err := rs.StoreMapResult(outDir); err != nil {
+		log.Fatal(err)
+	}
 	rs.Scripts.Setup.Run(ctxSetup, rs.Scripts.PreludePath, "", outDir, nil)
 	if err := rs.Scripts.Setup.Wait(); err != nil {
 		log.Errorf("Scripts.Setup error: %v", err)
@@ -444,6 +448,10 @@ func (rs *Repos) run(info *Info, outDir string) {
 		ctx, cancel := context.WithTimeout(context.Background(),
 			rs.Timeouts.Setup*time.Second)
 		defer cancel()
+		script.Result = ResultRun
+		if err := rs.StoreMapResult(outDir); err != nil {
+			log.Fatal(err)
+		}
 		script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
 			path.Join(outDir, repo.Name()), nil)
 		if err := script.Wait(); err != nil {
@@ -454,6 +462,9 @@ func (rs *Repos) run(info *Info, outDir string) {
 			return
 		}
 		script.Result = ResultPass
+		if err := rs.StoreMapResult(outDir); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	//// Start
@@ -467,6 +478,10 @@ func (rs *Repos) run(info *Info, outDir string) {
 			s := script
 			repoName := repo.Name()
 			readyCh := make(chan bool)
+			script.Result = ResultRun
+			if err := rs.StoreMapResult(outDir); err != nil {
+				log.Fatal(err)
+			}
 			go func() {
 				s.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
 					path.Join(outDir, repoName), readyCh)
@@ -474,6 +489,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 			select {
 			case <-readyCh:
 				script.Result = ResultReady
+				log.Debugf("Start %v -> %v is ready", repo.Name(), script.Path)
 			case <-time.After(rs.Timeouts.Ready * time.Second):
 				cancel()
 				log.Errorf("Start %v -> %v timed out at ready",
@@ -481,7 +497,9 @@ func (rs *Repos) run(info *Info, outDir string) {
 				script.Result = ResultErr
 				rs.Result = ResultReadyErr
 			}
-			log.Debugf("Start %v -> %v is ready", repo.Name(), script.Path)
+			if err := rs.StoreMapResult(outDir); err != nil {
+				log.Fatal(err)
+			}
 		}
 	}
 
@@ -493,6 +511,10 @@ func (rs *Repos) run(info *Info, outDir string) {
 				ctx, cancel := context.WithTimeout(context.Background(),
 					rs.Timeouts.Test*time.Second)
 				defer cancel()
+				script.Result = ResultRun
+				if err := rs.StoreMapResult(outDir); err != nil {
+					log.Fatal(err)
+				}
 				script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
 					path.Join(outDir, repo.Name()), nil)
 				if err := script.Wait(); err != nil {
@@ -503,6 +525,9 @@ func (rs *Repos) run(info *Info, outDir string) {
 				} else {
 					script.Result = ResultPass
 				}
+				if err := rs.StoreMapResult(outDir); err != nil {
+					log.Fatal(err)
+				}
 			}
 		}
 	}
@@ -512,6 +537,10 @@ func (rs *Repos) run(info *Info, outDir string) {
 	ctxStop, cancelStop := context.WithTimeout(context.Background(),
 		rs.Timeouts.Stop*time.Second)
 	defer cancelStop()
+	rs.Scripts.Setup.Result = ResultRun
+	if err := rs.StoreMapResult(outDir); err != nil {
+		log.Fatal(err)
+	}
 	rs.Scripts.Stop.Run(ctxStop, rs.Scripts.PreludePath, "", outDir, nil)
 	if err := rs.Scripts.Stop.Wait(); err != nil {
 		log.Errorf("Scripts.Stop error: %v", err)
@@ -543,6 +572,10 @@ func (rs *Repos) run(info *Info, outDir string) {
 		ctx, cancel := context.WithTimeout(context.Background(),
 			rs.Timeouts.Stop*time.Second)
 		defer cancel()
+		script.Result = ResultRun
+		if err := rs.StoreMapResult(outDir); err != nil {
+			log.Fatal(err)
+		}
 		script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
 			path.Join(outDir, repo.Name()), nil)
 		if err := script.Wait(); err != nil {
@@ -684,8 +717,9 @@ func (rs *Repos) NewMapResult() MapResult {
 	return result
 }
 
-func (rs *Repos) StoreMapResult(result *MapResult, outDir string) error {
-	resultJSON, err := json.Marshal(result)
+func (rs *Repos) StoreMapResult(outDir string) error {
+	mapResult := rs.NewMapResult()
+	resultJSON, err := json.Marshal(mapResult)
 	if err != nil {
 		return err
 	}
@@ -915,6 +949,12 @@ func main() {
 				return "☒"
 			case ResultPass:
 				return "☑"
+			case ResultReadyErr:
+				return "☒"
+			case ResultReady:
+				return "✌"
+			case ResultRun:
+				return "☛"
 			default:
 				return "♨"
 			}
@@ -932,6 +972,7 @@ func main() {
 		resultDirs, err := getResultsDir(outDir)
 		if err != nil {
 			ginFail(c, "", err)
+			return
 		}
 		tests := make([]InfoRes, 0, len(resultDirs))
 		for _, resultDir := range resultDirs {
@@ -950,31 +991,48 @@ func main() {
 		})
 	})
 
+	handleResult := func(c *gin.Context, ts string) error {
+		infoRes, err := getInfoRes(path.Join(outDir, ts))
+		if err != nil {
+			ginFail(c, "", err)
+			return err
+		}
+		if infoRes == nil {
+			infoRes, err = getInfoRes(path.Join(outDir, "archive", ts))
+			if err != nil {
+				ginFail(c, "", err)
+				return err
+			}
+		}
+		if infoRes == nil {
+			err := fmt.Errorf("No info.json found")
+			ginFail(c, "", err)
+			return err
+		}
+		fmt.Printf("DBG %#v", infoRes.Res.Setup.Repos)
+		c.HTML(http.StatusOK, "result.html", gin.H{
+			"infoRes": *infoRes,
+		})
+		return nil
+	}
+
 	router.GET("/result/:ts", func(c *gin.Context) {
 		ts := c.Param("ts")
 		if strings.Contains(ts, "/") || strings.Contains(ts, "..") {
 			ginFail(c, "", fmt.Errorf("ts contains \"/\" or \"..\""))
 			return
 		}
-		infoRes, err := getInfoRes(path.Join(outDir, ts))
+		handleResult(c, ts)
+	})
+
+	router.GET("/last", func(c *gin.Context) {
+		resultDirs, err := getResultsDir(outDir)
 		if err != nil {
 			ginFail(c, "", err)
 			return
 		}
-		if infoRes == nil {
-			infoRes, err = getInfoRes(path.Join(outDir, "archive", ts))
-			if err != nil {
-				ginFail(c, "", err)
-				return
-			}
-		}
-		if infoRes == nil {
-			ginFail(c, "", fmt.Errorf("No info.json found"))
-			return
-		}
-		c.HTML(http.StatusOK, "result.html", gin.H{
-			"infoRes": *infoRes,
-		})
+		ts := resultDirs[0]
+		handleResult(c, ts)
 	})
 
 	log.Infof("Listening on http://%s", cfg.Listen)

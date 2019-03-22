@@ -1,0 +1,3 @@
+#!/bin/sh
+mongo iden3-notificationserver --eval "db.dropDatabase()"
+go get ./...

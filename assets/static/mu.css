@@ -88,6 +88,10 @@ textarea {
   vertical-align: middle;
 }
 
+.READY {
+  color: #DAA520;
+}
+
 .PASS {
   color: #228B22;
 }
@@ -96,7 +100,15 @@ textarea {
   color: #B22222;
 }
 
+.READYERR {
+  color: #FF6347;
+}
+
 .UNK {
+  color: #B0C4DE;
+}
+
+.RUNNING {
   color: #4169E1;
 }
 
