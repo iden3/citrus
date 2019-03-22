@@ -1,6 +1,6 @@
 # Citrus
 
-<img align="right" width="160px" src="https://github.com/iden3/citrus/raw/master/logo.png">
+<img align="right" width="180px" src="https://github.com/iden3/citrus/raw/master/logo.png">
 
 Citrus: Continuous Integration Testing running until sunrise.
 
@@ -37,6 +37,10 @@ where you specify the list of repository urls, and further parameters like
 timeouts in seconds.
 
 See the `example` folder for a specific example.
+
+## Screenshots
+
+![Results Screenshot](./screenshot.png)
 
 ## License
 
