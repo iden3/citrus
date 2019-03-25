@@ -7,14 +7,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"html/template"
 	"io"
 	"io/ioutil"
-	"net/http"
 
-	"github.com/gin-gonic/gin"
-
-	// "net/http"
 	"os"
 	"os/exec"
 	"path"
@@ -34,12 +29,13 @@ import (
 type Result string
 
 const (
-	ResultUnk      Result = "UNK"
-	ResultPass     Result = "PASS"
-	ResultErr      Result = "ERR"
-	ResultReady    Result = "READY"
-	ResultReadyErr Result = "READYERR"
-	ResultRun      Result = "RUNNING"
+	ResultUnk        Result = "UNK"
+	ResultPass       Result = "PASS"
+	ResultErr        Result = "ERR"
+	ResultReady      Result = "READY"
+	ResultReadyErr   Result = "READYERR"
+	ResultRun        Result = "RUNNING"
+	ResultUnfinished Result = "UNFINISHED"
 )
 
 type ScriptCfg struct {
@@ -408,7 +404,18 @@ func (rs *Repos) Run() {
 	}
 	rs.ClearResults()
 
+	f, err := os.Create(path.Join(outDir, ".running"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	f.Close()
+
 	rs.run(&info, outDir)
+
+	err = os.Remove(path.Join(outDir, ".running"))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	log.Infof("Tests %08d (%s) result: %s", info.Ts, info.TsRFC3339, rs.Result)
 
@@ -776,17 +783,20 @@ func (rs *Repos) StoreInfo(info *Info, outDir string) error {
 	return nil
 }
 
-func (rs *Repos) UpdateLoop() {
+func (rs *Repos) UpdateLoop(forceInit bool, once bool) {
 	var err error
-	_, err = rs.Update()
+	updateInit, err := rs.Update()
 	if err != nil {
 		log.Fatal(err)
 	}
-	updated := true
+	updated := forceInit || updateInit || once
 	for {
 		if updated {
 			rs.Run()
 			// rs.PrintResults()
+			if once {
+				return
+			}
 		}
 		time.Sleep(rs.Timeouts.Loop * time.Second)
 		updated, err = rs.Update()
@@ -794,18 +804,6 @@ func (rs *Repos) UpdateLoop() {
 			log.Fatal(err)
 		}
 	}
-}
-
-func ginFail(c *gin.Context, msg string, err error) {
-	if err != nil {
-		log.WithError(err).Error(msg)
-	} else {
-		log.Error(msg)
-	}
-	c.JSON(400, gin.H{
-		"error": fmt.Sprintf("%s: %v", msg, err),
-	})
-	return
 }
 
 func printUsage() {
@@ -833,8 +831,9 @@ func getResultsDir(outDir string) ([]string, error) {
 }
 
 type InfoRes struct {
-	Info Info
-	Res  *MapResult
+	Info    Info
+	Res     *MapResult
+	Running bool
 }
 
 func getInfoRes(dir string) (*InfoRes, error) {
@@ -858,14 +857,33 @@ func getInfoRes(dir string) (*InfoRes, error) {
 		}
 		infoRes.Res = &result
 	}
+	if _, err := os.Stat(path.Join(dir, ".running")); os.IsNotExist(err) || err != nil {
+		infoRes.Running = false
+	} else {
+		infoRes.Running = true
+	}
 	return &infoRes, nil
+}
+
+func cleanRunningFiles(outDir string) error {
+	resultDirs, err := getResultsDir(outDir)
+	if err != nil {
+		return err
+	}
+	for _, resultDir := range resultDirs {
+		dir := path.Join(outDir, resultDir)
+		os.Remove(path.Join(dir, ".running"))
+	}
+	return nil
 }
 
 func main() {
 	confDir := flag.String("conf", "", "config directory")
 	debug := flag.Bool("debug", false, "enable debug output")
 	quiet := flag.Bool("quiet", false, "output warnings and errors only")
-	test := flag.Bool("test", false, "run web backend only")
+	webOnly := flag.Bool("web-only", false, "run web backend only")
+	force := flag.Bool("force", false, "force an initial run even if repositories were not updated")
+	oneShot := flag.Bool("one-shot", false, "run tests only once")
 	flag.Parse()
 	if *confDir == "" {
 		printUsage()
@@ -911,7 +929,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if !*test {
+	// Clean unfinished results
+	if err := cleanRunningFiles(outDir); err != nil {
+		log.Fatal(err)
+	}
+
+	if !*webOnly {
 		repos, err := NewRepos(cfg.ConfDir, outDir, reposDir, cfg.ReposUrl,
 			cfg.ScriptsCfg,
 			cfg.ReposCfg,
@@ -927,114 +950,8 @@ func main() {
 			log.Fatal(err)
 		}
 
-		go repos.UpdateLoop()
+		go repos.UpdateLoop(*force, *oneShot)
 	}
 
-	// http.Handle("/", http.FileServer(http.Dir(cfg.WorkDir)))
-
-	// log.Infof("Serving %s on http://%s", cfg.WorkDir, cfg.Listen)
-	// log.Fatal(http.ListenAndServe(cfg.Listen, nil))
-
-	router := gin.Default()
-	router.SetFuncMap(template.FuncMap{
-		"RFC1123": func(t int64) string {
-			return time.Unix(t, 0).Format(time.RFC1123)
-		},
-		"RepoName": func(url string) string {
-			return url[strings.LastIndex(url, "/")+1:]
-		},
-		"Res2Icon": func(res Result) string {
-			switch res {
-			case ResultErr:
-				return "☒"
-			case ResultPass:
-				return "☑"
-			case ResultReadyErr:
-				return "☒"
-			case ResultReady:
-				return "✌"
-			case ResultRun:
-				return "☛"
-			default:
-				return "♨"
-			}
-		},
-		"ResultUnk": func() Result {
-			return ResultUnk
-		},
-	})
-
-	router.LoadHTMLGlob(path.Join(wd, "assets", "templates", "*"))
-	router.Static("static", path.Join(wd, "assets", "static"))
-	router.Static("out", outDir)
-
-	router.GET("/", func(c *gin.Context) {
-		resultDirs, err := getResultsDir(outDir)
-		if err != nil {
-			ginFail(c, "", err)
-			return
-		}
-		tests := make([]InfoRes, 0, len(resultDirs))
-		for _, resultDir := range resultDirs {
-			dir := path.Join(outDir, resultDir)
-			infoRes, err := getInfoRes(dir)
-			if err != nil {
-				ginFail(c, "", err)
-				return
-			}
-			if infoRes != nil {
-				tests = append(tests, *infoRes)
-			}
-		}
-		c.HTML(http.StatusOK, "index.html", gin.H{
-			"tests": tests,
-		})
-	})
-
-	handleResult := func(c *gin.Context, ts string) error {
-		infoRes, err := getInfoRes(path.Join(outDir, ts))
-		if err != nil {
-			ginFail(c, "", err)
-			return err
-		}
-		if infoRes == nil {
-			infoRes, err = getInfoRes(path.Join(outDir, "archive", ts))
-			if err != nil {
-				ginFail(c, "", err)
-				return err
-			}
-		}
-		if infoRes == nil {
-			err := fmt.Errorf("No info.json found")
-			ginFail(c, "", err)
-			return err
-		}
-		fmt.Printf("DBG %#v", infoRes.Res.Setup.Repos)
-		c.HTML(http.StatusOK, "result.html", gin.H{
-			"infoRes": *infoRes,
-		})
-		return nil
-	}
-
-	router.GET("/result/:ts", func(c *gin.Context) {
-		ts := c.Param("ts")
-		if strings.Contains(ts, "/") || strings.Contains(ts, "..") {
-			ginFail(c, "", fmt.Errorf("ts contains \"/\" or \"..\""))
-			return
-		}
-		handleResult(c, ts)
-	})
-
-	router.GET("/last", func(c *gin.Context) {
-		resultDirs, err := getResultsDir(outDir)
-		if err != nil {
-			ginFail(c, "", err)
-			return
-		}
-		ts := resultDirs[0]
-		handleResult(c, ts)
-	})
-
-	log.Infof("Listening on http://%s", cfg.Listen)
-	router.Run(cfg.Listen)
+	serveWeb(outDir, cfg.Listen)
 }

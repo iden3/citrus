@@ -5,8 +5,9 @@
     <title>Citrus Results</title>
     <link href="/static/style.css" rel="stylesheet" media="all">
   </head>
-<html>
 <body>
+
+  {{ template "header.html" . }}
 
   <div class="center">
     <h1>Citrus Results</h1>
@@ -15,10 +16,7 @@
   <ul>
     {{ range $index, $infoRes := .tests }}
     <li>
-      {{ $res := ResultUnk }}
-      {{ if $infoRes.Res }}
-        {{ $res = $infoRes.Res.Result }}
-      {{ end }}
+      {{ $res := $infoRes | GeneralResult }}
       <div class="res {{ $res }}">{{ $res | Res2Icon }}</div>
       <a href="/result/{{ $infoRes.Info.Ts }}">
         <strong>{{ $infoRes.Info.Ts | RFC1123 }}</strong>
@@ -26,6 +24,8 @@
     </li>
     {{ end }}
   </ul>
+
+  {{ template "footer.html" . }}
 
 </body>
 </html>

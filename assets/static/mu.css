@@ -1,6 +1,7 @@
 /*
 | The mu framework v0.3.1
 | BafS 2016-2018
+| Changed by Eduard Sanou 2019
 */
 *, *:after, *:before {
   box-sizing: border-box;
@@ -64,6 +65,14 @@ button, select {
   font-size: 14px;
 }
 
+button.icon {
+  background: none;
+  padding: 0px 8px;
+  font: 42px serif;
+  vertical-align:middle;
+  cursor: pointer;
+}
+
 input, td, th {
   padding: 4px;
 }
@@ -83,8 +92,11 @@ textarea {
 }
 
 .res {
-  display:inline;
+  display: inline-block;
   font-size: 20px;
+  width: 16px;
+  text-align: center;
+  font-family: serif;
   vertical-align: middle;
 }
 
@@ -93,7 +105,7 @@ textarea {
 }
 
 .PASS {
-  color: #228B22;
+  color: #32CD32;
 }
 
 .ERR {
@@ -101,11 +113,15 @@ textarea {
 }
 
 .READYERR {
-  color: #FA8072;
+  color: #9932CC;
 }
 
 .UNK {
-  color: #B0C4DE;
+  color: #778899;
+}
+
+.UNFINISHED {
+  color: #CD853F;
 }
 
 .RUNNING {
@@ -115,6 +131,29 @@ textarea {
 
 @keyframes blinker {
   50% { opacity: 0; }
+}
+
+/* Dark theme */
+
+.dark {
+  color: #bbb;
+  background-color: #181818;
+}
+
+.dark button {
+  color: #ddd;
+}
+
+.dark button:hover {
+  background-color: #111;
+}
+
+.dark a {
+  color: #00BFFF;
+}
+
+.dark a:hover {
+  color: #1E90FF;
 }
 
 /*

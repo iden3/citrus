@@ -8,8 +8,9 @@
     <title>Citrus Test Result</title>
     <link href="/static/style.css" rel="stylesheet" media="all">
   </head>
-<html>
 <body>
+
+  {{ template "header.html" . }}
 
   <div class="center">
     <h1>Citrus Test Result</h1>
@@ -17,13 +18,11 @@
 
   <h3>Snapshot from {{ $time }}</h3>
   <table>
-    <thread>
     <tr>
       <th>Repository</th>
       <th>Branch</th>
       <th>Commit</th>
     </tr>
-    </thread>
     <tbody>
     {{ range $index, $infoRepo := .infoRes.Info.Repos }}
     <tr>
@@ -36,7 +35,7 @@
   </table>
 
   {{ with .infoRes.Res }}
-    <h2><div class="res {{ .Result }}">{{ .Result | Res2Icon }}</div> Scripts Results</h2>
+    <h2><div class="res {{ $.infoRes | GeneralResult }}">{{ $.infoRes | GeneralResult | Res2Icon }}</div> Scripts Results</h2>
 
     <h3>Setup</h3>
 
@@ -118,9 +117,15 @@
       {{ end }}
     </ul>
   {{ else }}
-    <h2>Scripts Results</h2>
-    Running...
+    {{ if .infoRes.Running }}
+      <h2>Scripts Results</h2>
+      Running...
+    {{ else }}
+      <h2><div class="res {{ $.infoRes | GeneralResult }}">{{ $.infoRes | GeneralResult | Res2Icon }}</div> Scripts Results</h2>
+    {{ end }}
   {{ end }}
+
+  {{ template "footer.html" . }}
 
 </body>
 </html>
