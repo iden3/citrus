@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"os/signal"
 
 	"os"
 	"os/exec"
@@ -110,18 +111,24 @@ func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string,
 }
 
 func (s *Script) Wait() error {
+	if s.Cmd == nil {
+		return fmt.Errorf("Script.Cmd is nil")
+	}
 	err := <-s.waitCh
 	log.Debugf("Finished %s with err: %v", s.Path, err)
 	return err
 }
 
 func (s *Script) Stop() error {
+	if s.Cmd == nil {
+		return fmt.Errorf("Script.Cmd is nil")
+	}
 	defer func() { s.Cmd = nil }()
 	select {
 	case res := <-s.waitCh:
 		return fmt.Errorf("Script exited prematurely with error %v",
 			res)
-	case <-time.After(500 * time.Millisecond):
+	default:
 
 	}
 
@@ -882,6 +889,7 @@ func main() {
 	debug := flag.Bool("debug", false, "enable debug output")
 	quiet := flag.Bool("quiet", false, "output warnings and errors only")
 	webOnly := flag.Bool("web-only", false, "run web backend only")
+	noWeb := flag.Bool("no-web", false, "don't run the web backend")
 	force := flag.Bool("force", false, "force an initial run even if repositories were not updated")
 	oneShot := flag.Bool("one-shot", false, "run tests only once")
 	flag.Parse()
@@ -934,8 +942,9 @@ func main() {
 		log.Fatal(err)
 	}
 
+	var repos *Repos
 	if !*webOnly {
-		repos, err := NewRepos(cfg.ConfDir, outDir, reposDir, cfg.ReposUrl,
+		repos, err = NewRepos(cfg.ConfDir, outDir, reposDir, cfg.ReposUrl,
 			cfg.ScriptsCfg,
 			cfg.ReposCfg,
 			Timeouts{
@@ -950,8 +959,23 @@ func main() {
 			log.Fatal(err)
 		}
 
+		repos.ArchiveOld()
 		go repos.UpdateLoop(*force, *oneShot)
 	}
-
-	serveWeb(outDir, cfg.Listen)
+	if !*noWeb {
+		go serveWeb(outDir, cfg.Listen)
+	}
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+	<-sigChan
+	if !*webOnly {
+		log.Info("Stopping start Scripts...")
+		for _, repo := range repos.Repos {
+			for _, script := range repo.Scripts.Start {
+				script.Stop()
+			}
+		}
+	}
+	log.Info("Exiting...")
+	os.Exit(0)
 }
