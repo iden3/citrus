@@ -813,6 +813,15 @@ func (rs *Repos) UpdateLoop(forceInit bool, once bool) {
 	}
 }
 
+func (rs *Repos) Cleanup() {
+	log.Info("Stopping start Scripts...")
+	for _, repo := range rs.Repos {
+		for _, script := range repo.Scripts.Start {
+			script.Stop()
+		}
+	}
+}
+
 func printUsage() {
 	fmt.Printf("Usage of %s:\n", os.Args[0])
 	flag.PrintDefaults()
@@ -968,13 +977,8 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)
 	<-sigChan
-	if !*webOnly {
-		log.Info("Stopping start Scripts...")
-		for _, repo := range repos.Repos {
-			for _, script := range repo.Scripts.Start {
-				script.Stop()
-			}
-		}
+	if repos != nil {
+		repos.Cleanup()
 	}
 	log.Info("Exiting...")
 	os.Exit(0)

@@ -1,0 +1,2 @@
+#!/bin/sh
+npm run test:int test/private-folder.test.js

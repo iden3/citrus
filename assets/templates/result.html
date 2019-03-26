@@ -5,6 +5,9 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
+    {{ if .infoRes.Running }}
+      <meta http-equiv="refresh" content="5" >
+    {{ end }}
     <title>Citrus Test Result</title>
     <link href="/static/style.css" rel="stylesheet" media="all">
   </head>

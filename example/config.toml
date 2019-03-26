@@ -16,24 +16,27 @@ setup = 120
 stop = 120
 
 [script.go-iden3.start_nameserver]
-readystr = "API server at"
+readystr = "Service API is ready at"
 
 [script.go-iden3.start_relay]
-readystr = "API server at"
+readystr = "Service API is ready at"
 
 [script.go-iden3.start_backupserver]
-readystr = "API server at"
+readystr = "Service API is ready at"
 
 [script.go-iden3.start_claimserver]
-readystr = "API server at"
+readystr = "Service API is ready at"
 
 [script.notifications-server.start_notificationserver]
-readystr = "API server at"
+readystr = "Service API is ready at"
 
 [script.tx-forwarder.start_txforwarder]
-readystr = "API server at"
+readystr = "Service API is ready at"
 
 [repo.go-iden3]
-# branch = "feature/test2"
 branch = "master"
+# branch = "feature/serverready"
 
+[repo.iden3js]
+# branch = "master"
+branch = "feature/asynctests"
