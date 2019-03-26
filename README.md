@@ -42,6 +42,11 @@ See the `example` folder for a specific example.
 
 ![Results Screenshot](./screenshot.png)
 
+## Other
+
+The css style used in the web backend is based on the [the μ css
+framework](https://bafs.github.io/mu/).
+
 ## License
 
 GPLv3, see `LICENSE.txt`
