@@ -88,7 +88,7 @@ type Script struct {
 	// Running  bool
 }
 
-func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string,
+func (s *Script) Start(ctx context.Context, preludePath, runPath, outDir string,
 	readyCh chan bool) {
 	if err := os.MkdirAll(outDir, 0700); err != nil {
 		log.Panic(err)
@@ -105,18 +105,27 @@ func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string,
 	if err != nil {
 		log.Panic(err)
 	}
+	// stdoutBuf := bufio.NewReader(stdout)
+	// stderrBuf := bufio.NewReader(stderr)
+	outFileName := fmt.Sprintf("%s.out.txt", path.Base(s.Path))
+	go outputWrite(stdout, stderr, path.Join(outDir, outFileName), s.ReadyStr, readyCh)
 	if err := s.Cmd.Start(); err != nil {
 		log.Panic(err)
 	}
 	s.waitCh = make(chan error)
+
 	go func() {
 		defer panicMain()
 		// s.Running = true
 		s.waitCh <- s.Cmd.Wait()
 		// s.Running = false
 	}()
-	outFileName := fmt.Sprintf("%s.out.txt", path.Base(s.Path))
-	outputWrite(stdout, stderr, path.Join(outDir, outFileName), s.ReadyStr, readyCh)
+}
+
+func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string,
+	readyCh chan bool) error {
+	s.Start(ctx, preludePath, runPath, outDir, readyCh)
+	return s.Wait()
 }
 
 func (s *Script) Wait() error {
@@ -148,6 +157,7 @@ func (s *Script) Stop() error {
 	if err := syscall.Kill(-pgid, syscall.SIGINT); err != nil {
 		return err
 	}
+	log.Debugf("SIGINT to %v", -pgid)
 	select {
 	case <-s.waitCh:
 		return nil
@@ -324,14 +334,16 @@ func (rs *Repos) Update() (bool, error) {
 
 func outputWrite(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 	readyStr string, readyCh chan bool) {
+	defer panicMain()
 	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
 		log.Panic(err)
 	}
 	defer f.Close()
 	lineCh := make(chan string)
-	endCh := make(chan error)
-	readLine := func(rd io.Reader) {
+	stdoutEndCh := make(chan error)
+	stderrEndCh := make(chan error)
+	readLine := func(rd io.Reader, endCh chan error) {
 		defer panicMain()
 		reader := bufio.NewReader(rd)
 		for {
@@ -343,12 +355,13 @@ func outputWrite(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 		}
 		endCh <- err
 	}
-	go readLine(stdout)
-	go readLine(stderr)
+	go readLine(stdout, stdoutEndCh)
+	go readLine(stderr, stderrEndCh)
 	ready := false
 	if readyStr == "" {
 		ready = true
 	}
+	stdoutClosed, stderrClosed := false, false
 	for {
 		select {
 		case line := <-lineCh:
@@ -360,11 +373,23 @@ func outputWrite(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 			if err != nil {
 				log.Panicf("Can't write output to file %v: %v", filePath, err)
 			}
-		case err := <-endCh:
+			f.Sync()
+		case err := <-stdoutEndCh:
 			if err != nil && err != io.EOF {
-				log.Errorf("Process stdout/stderr error: %v", err)
+				log.Errorf("Process stdout error: %v", err)
 			}
-			return
+			stdoutClosed = true
+			if stderrClosed {
+				return
+			}
+		case err := <-stderrEndCh:
+			if err != nil && err != io.EOF {
+				log.Errorf("Process stderr error: %v", err)
+			}
+			stderrClosed = true
+			if stdoutClosed {
+				return
+			}
 		}
 	}
 }
@@ -456,8 +481,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 	if err := rs.StoreMapResult(outDir); err != nil {
 		log.Panic(err)
 	}
-	rs.Scripts.Setup.Run(ctxSetup, rs.Scripts.PreludePath, "", outDir, nil)
-	if err := rs.Scripts.Setup.Wait(); err != nil {
+	if err := rs.Scripts.Setup.Run(ctxSetup, rs.Scripts.PreludePath, "", outDir, nil); err != nil {
 		log.Errorf("Scripts.Setup error: %v", err)
 		rs.Scripts.Setup.Result = ResultErr
 		rs.Result = ResultErr
@@ -477,9 +501,8 @@ func (rs *Repos) run(info *Info, outDir string) {
 		if err := rs.StoreMapResult(outDir); err != nil {
 			log.Panic(err)
 		}
-		script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
-			path.Join(outDir, repo.Name()), nil)
-		if err := script.Wait(); err != nil {
+		if err := script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
+			path.Join(outDir, repo.Name()), nil); err != nil {
 			log.Errorf("Setup %v -> %v finished with error: %v",
 				repo.Name(), script.Path, err)
 			script.Result = ResultErr
@@ -507,11 +530,8 @@ func (rs *Repos) run(info *Info, outDir string) {
 			if err := rs.StoreMapResult(outDir); err != nil {
 				log.Panic(err)
 			}
-			go func() {
-				defer panicMain()
-				s.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
-					path.Join(outDir, repoName), readyCh)
-			}()
+			s.Start(ctx, rs.Scripts.PreludePath, repo.Dir,
+				path.Join(outDir, repoName), readyCh)
 			select {
 			case <-readyCh:
 				script.Result = ResultReady
@@ -541,9 +561,8 @@ func (rs *Repos) run(info *Info, outDir string) {
 				if err := rs.StoreMapResult(outDir); err != nil {
 					log.Panic(err)
 				}
-				script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
-					path.Join(outDir, repo.Name()), nil)
-				if err := script.Wait(); err != nil {
+				if err := script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
+					path.Join(outDir, repo.Name()), nil); err != nil {
 					log.Errorf("Test %v -> %v finished with error: %v",
 						repo.Name(), script.Path, err)
 					script.Result = ResultErr
@@ -567,8 +586,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 	if err := rs.StoreMapResult(outDir); err != nil {
 		log.Panic(err)
 	}
-	rs.Scripts.Stop.Run(ctxStop, rs.Scripts.PreludePath, "", outDir, nil)
-	if err := rs.Scripts.Stop.Wait(); err != nil {
+	if err := rs.Scripts.Stop.Run(ctxStop, rs.Scripts.PreludePath, "", outDir, nil); err != nil {
 		log.Errorf("Scripts.Stop error: %v", err)
 		rs.Scripts.Stop.Result = ResultErr
 		rs.Result = ResultErr
@@ -602,9 +620,8 @@ func (rs *Repos) run(info *Info, outDir string) {
 		if err := rs.StoreMapResult(outDir); err != nil {
 			log.Panic(err)
 		}
-		script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
-			path.Join(outDir, repo.Name()), nil)
-		if err := script.Wait(); err != nil {
+		if err := script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
+			path.Join(outDir, repo.Name()), nil); err != nil {
 			log.Errorf("Stop %v -> %v finished with error: %v",
 				repo.Name(), script.Path, err)
 			script.Result = ResultErr

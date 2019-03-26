@@ -1,3 +1,4 @@
 #!/bin/sh
+sudo apt-get install -y mongodb
 mongo iden3-backupserver --eval "db.dropDatabase()"
 go get ./...

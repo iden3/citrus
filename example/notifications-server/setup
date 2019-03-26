@@ -1,3 +1,4 @@
 #!/bin/sh
+sudo apt-get install -y mongodb
 mongo iden3-notificationserver --eval "db.dropDatabase()"
 go get ./...

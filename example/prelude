@@ -8,6 +8,6 @@ LISTEN_ADDR="127.0.0.1"
 EOF
 
 export CONFFILE="/tmp/goiden3conf.sh"
-export GOIDEN3RUN="/home/dev/git/iden3/private-configs/run.sh"
+export GOIDEN3RUN="/root/git/private-configs/run.sh"
 
 . $1

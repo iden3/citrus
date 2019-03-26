@@ -4,7 +4,7 @@ listen = "127.0.0.1:8010"
 repos = [
     "https://github.com/iden3/go-iden3.git",
     "https://github.com/iden3/notifications-server.git",
-    "https://github.com/iden3/tx-forwarder.git",
+    # "https://github.com/iden3/tx-forwarder.git",
     "https://github.com/iden3/iden3js.git",
 ]
 
@@ -38,5 +38,5 @@ branch = "master"
 # branch = "feature/serverready"
 
 [repo.iden3js]
-# branch = "master"
-branch = "feature/asynctests"
+branch = "master"
+# branch = "feature/asynctests"
