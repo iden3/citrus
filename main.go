@@ -27,6 +27,14 @@ import (
 	"gopkg.in/src-d/go-git.v4/plumbing"
 )
 
+var panicCh chan interface{}
+
+func panicMain() {
+	if x := recover(); x != nil {
+		panicCh <- x
+	}
+}
+
 type Result string
 
 const (
@@ -83,7 +91,7 @@ type Script struct {
 func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string,
 	readyCh chan bool) {
 	if err := os.MkdirAll(outDir, 0700); err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	log.Debugf("Running %s", s.Path)
 	s.Cmd = exec.CommandContext(ctx, preludePath, s.Path)
@@ -91,17 +99,18 @@ func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string,
 	s.Cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := s.Cmd.StdoutPipe()
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	stderr, err := s.Cmd.StderrPipe()
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	if err := s.Cmd.Start(); err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	s.waitCh = make(chan error)
 	go func() {
+		defer panicMain()
 		// s.Running = true
 		s.waitCh <- s.Cmd.Wait()
 		// s.Running = false
@@ -239,7 +248,8 @@ func NewRepos(confDir, outDir, reposDir string, reposUrl []string,
 				scripts.Setup = &Script{Path: filePath}
 			} else if strings.HasPrefix(file.Name(), "start") {
 				if cfg == nil || cfg[file.Name()].ReadyStr == "" {
-					log.Fatalf("Start %v -> %v hasn't specified a readystr", repo.Name(), filePath)
+					return nil, fmt.Errorf("Start %v -> %v hasn't specified a readystr",
+						repo.Name(), filePath)
 				}
 				script := Script{Path: filePath}
 				script.ReadyStr = cfg[file.Name()].ReadyStr
@@ -316,12 +326,13 @@ func outputWrite(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 	readyStr string, readyCh chan bool) {
 	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	defer f.Close()
 	lineCh := make(chan string)
 	endCh := make(chan error)
 	readLine := func(rd io.Reader) {
+		defer panicMain()
 		reader := bufio.NewReader(rd)
 		for {
 			line, err := reader.ReadString('\n')
@@ -347,7 +358,7 @@ func outputWrite(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 			}
 			_, err := io.WriteString(f, line)
 			if err != nil {
-				log.Fatalf("Can't write output to file %v: %v", filePath, err)
+				log.Panicf("Can't write output to file %v: %v", filePath, err)
 			}
 		case err := <-endCh:
 			if err != nil && err != io.EOF {
@@ -384,18 +395,18 @@ func (rs *Repos) ArchiveOld() {
 	curLen := 16
 	archiveDir := path.Join(rs.OutDir, "archive")
 	if err := os.MkdirAll(archiveDir, 0700); err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	resultDirs, err := getResultsDir(rs.OutDir)
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	if len(resultDirs) <= curLen {
 		return
 	}
 	for _, file := range resultDirs[curLen:] {
 		if err := os.Rename(path.Join(rs.OutDir, file), path.Join(archiveDir, file)); err != nil {
-			log.Fatal(err)
+			log.Panic(err)
 		}
 	}
 }
@@ -404,16 +415,16 @@ func (rs *Repos) Run() {
 	info := rs.NewInfo()
 	outDir := path.Join(rs.OutDir, fmt.Sprintf("%08d", info.Ts))
 	if err := os.MkdirAll(outDir, 0700); err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	if err := rs.StoreInfo(&info, outDir); err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	rs.ClearResults()
 
 	f, err := os.Create(path.Join(outDir, ".running"))
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	f.Close()
 
@@ -421,14 +432,14 @@ func (rs *Repos) Run() {
 
 	err = os.Remove(path.Join(outDir, ".running"))
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 
 	log.Infof("Tests %08d (%s) result: %s", info.Ts, info.TsRFC3339, rs.Result)
 
 	rs.PrintResults()
 	if err := rs.StoreMapResult(outDir); err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 
 	rs.ArchiveOld()
@@ -443,7 +454,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 	defer cancelSetup()
 	rs.Scripts.Setup.Result = ResultRun
 	if err := rs.StoreMapResult(outDir); err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	rs.Scripts.Setup.Run(ctxSetup, rs.Scripts.PreludePath, "", outDir, nil)
 	if err := rs.Scripts.Setup.Wait(); err != nil {
@@ -464,7 +475,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 		defer cancel()
 		script.Result = ResultRun
 		if err := rs.StoreMapResult(outDir); err != nil {
-			log.Fatal(err)
+			log.Panic(err)
 		}
 		script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
 			path.Join(outDir, repo.Name()), nil)
@@ -477,7 +488,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 		}
 		script.Result = ResultPass
 		if err := rs.StoreMapResult(outDir); err != nil {
-			log.Fatal(err)
+			log.Panic(err)
 		}
 	}
 
@@ -494,9 +505,10 @@ func (rs *Repos) run(info *Info, outDir string) {
 			readyCh := make(chan bool)
 			script.Result = ResultRun
 			if err := rs.StoreMapResult(outDir); err != nil {
-				log.Fatal(err)
+				log.Panic(err)
 			}
 			go func() {
+				defer panicMain()
 				s.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
 					path.Join(outDir, repoName), readyCh)
 			}()
@@ -512,7 +524,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 				rs.Result = ResultReadyErr
 			}
 			if err := rs.StoreMapResult(outDir); err != nil {
-				log.Fatal(err)
+				log.Panic(err)
 			}
 		}
 	}
@@ -527,7 +539,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 				defer cancel()
 				script.Result = ResultRun
 				if err := rs.StoreMapResult(outDir); err != nil {
-					log.Fatal(err)
+					log.Panic(err)
 				}
 				script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
 					path.Join(outDir, repo.Name()), nil)
@@ -540,7 +552,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 					script.Result = ResultPass
 				}
 				if err := rs.StoreMapResult(outDir); err != nil {
-					log.Fatal(err)
+					log.Panic(err)
 				}
 			}
 		}
@@ -553,7 +565,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 	defer cancelStop()
 	rs.Scripts.Stop.Result = ResultRun
 	if err := rs.StoreMapResult(outDir); err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	rs.Scripts.Stop.Run(ctxStop, rs.Scripts.PreludePath, "", outDir, nil)
 	if err := rs.Scripts.Stop.Wait(); err != nil {
@@ -588,7 +600,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 		defer cancel()
 		script.Result = ResultRun
 		if err := rs.StoreMapResult(outDir); err != nil {
-			log.Fatal(err)
+			log.Panic(err)
 		}
 		script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
 			path.Join(outDir, repo.Name()), nil)
@@ -768,7 +780,7 @@ func (rs *Repos) NewInfo() Info {
 	for _, repo := range rs.Repos {
 		hash, err := repo.HeadHash()
 		if err != nil {
-			log.Fatal(err)
+			log.Panic(err)
 		}
 		info.Repos = append(info.Repos, InfoRepo{
 			CommitHash: hex.EncodeToString(hash[:]),
@@ -791,10 +803,11 @@ func (rs *Repos) StoreInfo(info *Info, outDir string) error {
 }
 
 func (rs *Repos) UpdateLoop(forceInit bool, once bool) {
+	defer panicMain()
 	var err error
 	updateInit, err := rs.Update()
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	updated := forceInit || updateInit || once
 	for {
@@ -808,7 +821,7 @@ func (rs *Repos) UpdateLoop(forceInit bool, once bool) {
 		time.Sleep(rs.Timeouts.Loop * time.Second)
 		updated, err = rs.Update()
 		if err != nil {
-			log.Fatal(err)
+			log.Panic(err)
 		}
 	}
 }
@@ -894,6 +907,8 @@ func cleanRunningFiles(outDir string) error {
 }
 
 func main() {
+	panicCh = make(chan interface{})
+
 	confDir := flag.String("conf", "", "config directory")
 	debug := flag.Bool("debug", false, "enable debug output")
 	quiet := flag.Bool("quiet", false, "output warnings and errors only")
@@ -971,15 +986,24 @@ func main() {
 		repos.ArchiveOld()
 		go repos.UpdateLoop(*force, *oneShot)
 	}
+
 	if !*noWeb {
 		go serveWeb(outDir, cfg.Listen)
 	}
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt)
-	<-sigChan
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+
+	var panicVal interface{}
+	select {
+	case <-sigCh:
+	case panicVal = <-panicCh:
+	}
 	if repos != nil {
 		repos.Cleanup()
 	}
+	if panicVal != nil {
+		log.Fatal(panicVal)
+	}
 	log.Info("Exiting...")
-	os.Exit(0)
 }

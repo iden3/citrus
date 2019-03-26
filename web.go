@@ -26,9 +26,10 @@ func ginFail(c *gin.Context, msg string, err error) {
 }
 
 func serveWeb(outDir, listenAddr string) {
+	defer panicMain()
 	wd, err := os.Getwd()
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	router := gin.Default()
 	router.SetFuncMap(template.FuncMap{
