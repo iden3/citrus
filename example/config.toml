@@ -14,6 +14,7 @@ ready = 30
 test = 120
 setup = 120
 stop = 120
+hook = 60
 
 [script.go-iden3.start_nameserver]
 readystr = "Service API is ready at"

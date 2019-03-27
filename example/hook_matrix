@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+
+import time
+import sys
+import json
+from matrix_client.client import MatrixClient, MatrixHttpApi
+import matrix_config as cfg
+
+info_path, result_path = sys.argv[1], sys.argv[2]
+
+info = None
+with open(info_path) as f:
+    info = json.load(f)
+
+result = None
+with open(result_path) as f:
+    result = json.load(f)
+
+ts = info['Ts']
+url = f"{cfg.url}/result/{info['Ts']}"
+msg = f"Test run on {time.ctime(ts)}: {result['Result']}\nURL: {url}"
+print(msg)
+
+client = MatrixClient(cfg.server)
+print('> Loging in...')
+token = client.login(username=cfg.username, password=cfg.password)
+api = MatrixHttpApi(cfg.server, token=token)
+
+room_id = ''
+if hasattr(cfg, 'room_alias'):
+    room_id = api.get_room_id(cfg.room_alias)
+else:
+    room_id = cfg.room_id
+
+room = client.get_rooms()[room_id]
+print('> Sending text msg...')
+room.send_text(msg)

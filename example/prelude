@@ -10,4 +10,8 @@ EOF
 export CONFFILE="/tmp/goiden3conf.sh"
 export GOIDEN3RUN="/root/git/private-configs/run.sh"
 
-. $1
+if file $1 | grep -q "POSIX shell script"; then
+    exec sh -ex $@
+else
+    exec $@
+fi

@@ -66,6 +66,7 @@ type Config struct {
 		Ready int64
 		Test  int64
 		Stop  int64
+		Hook  int64
 	}
 	ScriptsCfg map[string]map[string]ScriptCfg `mapstructure:"script"`
 	ReposCfg   map[string]RepoCfg              `mapstructure:"repo"`
@@ -77,6 +78,7 @@ type Timeouts struct {
 	Ready time.Duration
 	Test  time.Duration
 	Stop  time.Duration
+	Hook  time.Duration
 }
 
 type Script struct {
@@ -88,13 +90,13 @@ type Script struct {
 	// Running  bool
 }
 
-func (s *Script) Start(ctx context.Context, preludePath, runPath, outDir string,
-	readyCh chan bool) {
+func (s *Script) Start(ctx context.Context, preludePath string, args []string,
+	runPath, outDir string, readyCh chan bool) {
 	if err := os.MkdirAll(outDir, 0700); err != nil {
 		log.Panic(err)
 	}
 	log.Debugf("Running %s", s.Path)
-	s.Cmd = exec.CommandContext(ctx, preludePath, s.Path)
+	s.Cmd = exec.CommandContext(ctx, preludePath, append([]string{s.Path}, args...)...)
 	s.Cmd.Dir = runPath
 	s.Cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := s.Cmd.StdoutPipe()
@@ -122,9 +124,9 @@ func (s *Script) Start(ctx context.Context, preludePath, runPath, outDir string,
 	}()
 }
 
-func (s *Script) Run(ctx context.Context, preludePath, runPath, outDir string,
-	readyCh chan bool) error {
-	s.Start(ctx, preludePath, runPath, outDir, readyCh)
+func (s *Script) Run(ctx context.Context, preludePath string, args []string,
+	runPath, outDir string, readyCh chan bool) error {
+	s.Start(ctx, preludePath, args, runPath, outDir, readyCh)
 	return s.Wait()
 }
 
@@ -172,6 +174,7 @@ type Scripts struct {
 	Start       []*Script
 	Test        []*Script
 	Stop        *Script
+	Hooks       []*Script
 	PreludePath string
 }
 
@@ -276,6 +279,17 @@ func NewRepos(confDir, outDir, reposDir string, reposUrl []string,
 		repo.OutDir = path.Join(outDir, repo.Name())
 		repos = append(repos, &repo)
 	}
+	hooks := make([]*Script, 0)
+	files, err := ioutil.ReadDir(confDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, file := range files {
+		filePath := path.Join(confDir, file.Name())
+		if strings.HasPrefix(file.Name(), "hook") {
+			hooks = append(hooks, &Script{Path: filePath})
+		}
+	}
 	return &Repos{
 		Repos:    repos,
 		Dir:      reposDir,
@@ -285,6 +299,7 @@ func NewRepos(confDir, outDir, reposDir string, reposUrl []string,
 		Scripts: Scripts{
 			Setup:       &Script{Path: path.Join(confDir, "setup")},
 			Stop:        &Script{Path: path.Join(confDir, "stop")},
+			Hooks:       hooks,
 			PreludePath: path.Join(confDir, "prelude"),
 		},
 	}, nil
@@ -408,6 +423,9 @@ func (rs *Repos) ClearResults() {
 		if s.Stop != nil {
 			s.Stop.Result = ResultUnk
 		}
+		for _, script := range s.Hooks {
+			script.Result = ResultUnk
+		}
 	}
 	clearScripts(&rs.Scripts)
 	for _, repo := range rs.Repos {
@@ -463,9 +481,6 @@ func (rs *Repos) Run() {
 	log.Infof("Tests %08d (%s) result: %s", info.Ts, info.TsRFC3339, rs.Result)
 
 	rs.PrintResults()
-	if err := rs.StoreMapResult(outDir); err != nil {
-		log.Panic(err)
-	}
 
 	rs.ArchiveOld()
 }
@@ -481,7 +496,8 @@ func (rs *Repos) run(info *Info, outDir string) {
 	if err := rs.StoreMapResult(outDir); err != nil {
 		log.Panic(err)
 	}
-	if err := rs.Scripts.Setup.Run(ctxSetup, rs.Scripts.PreludePath, "", outDir, nil); err != nil {
+	if err := rs.Scripts.Setup.Run(ctxSetup, rs.Scripts.PreludePath, nil, "",
+		outDir, nil); err != nil {
 		log.Errorf("Scripts.Setup error: %v", err)
 		rs.Scripts.Setup.Result = ResultErr
 		rs.Result = ResultErr
@@ -501,7 +517,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 		if err := rs.StoreMapResult(outDir); err != nil {
 			log.Panic(err)
 		}
-		if err := script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
+		if err := script.Run(ctx, rs.Scripts.PreludePath, nil, repo.Dir,
 			path.Join(outDir, repo.Name()), nil); err != nil {
 			log.Errorf("Setup %v -> %v finished with error: %v",
 				repo.Name(), script.Path, err)
@@ -530,7 +546,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 			if err := rs.StoreMapResult(outDir); err != nil {
 				log.Panic(err)
 			}
-			s.Start(ctx, rs.Scripts.PreludePath, repo.Dir,
+			s.Start(ctx, rs.Scripts.PreludePath, nil, repo.Dir,
 				path.Join(outDir, repoName), readyCh)
 			select {
 			case <-readyCh:
@@ -561,7 +577,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 				if err := rs.StoreMapResult(outDir); err != nil {
 					log.Panic(err)
 				}
-				if err := script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
+				if err := script.Run(ctx, rs.Scripts.PreludePath, nil, repo.Dir,
 					path.Join(outDir, repo.Name()), nil); err != nil {
 					log.Errorf("Test %v -> %v finished with error: %v",
 						repo.Name(), script.Path, err)
@@ -586,7 +602,8 @@ func (rs *Repos) run(info *Info, outDir string) {
 	if err := rs.StoreMapResult(outDir); err != nil {
 		log.Panic(err)
 	}
-	if err := rs.Scripts.Stop.Run(ctxStop, rs.Scripts.PreludePath, "", outDir, nil); err != nil {
+	if err := rs.Scripts.Stop.Run(ctxStop, rs.Scripts.PreludePath, nil, "",
+		outDir, nil); err != nil {
 		log.Errorf("Scripts.Stop error: %v", err)
 		rs.Scripts.Stop.Result = ResultErr
 		rs.Result = ResultErr
@@ -620,7 +637,7 @@ func (rs *Repos) run(info *Info, outDir string) {
 		if err := rs.StoreMapResult(outDir); err != nil {
 			log.Panic(err)
 		}
-		if err := script.Run(ctx, rs.Scripts.PreludePath, repo.Dir,
+		if err := script.Run(ctx, rs.Scripts.PreludePath, nil, repo.Dir,
 			path.Join(outDir, repo.Name()), nil); err != nil {
 			log.Errorf("Stop %v -> %v finished with error: %v",
 				repo.Name(), script.Path, err)
@@ -630,8 +647,24 @@ func (rs *Repos) run(info *Info, outDir string) {
 			script.Result = ResultPass
 		}
 	}
+
 	if rs.Result == ResultUnk {
 		rs.Result = ResultPass
+	}
+	if err := rs.StoreMapResult(outDir); err != nil {
+		log.Panic(err)
+	}
+
+	for _, script := range rs.Scripts.Hooks {
+		ctx, cancel := context.WithTimeout(context.Background(),
+			rs.Timeouts.Hook*time.Second)
+		defer cancel()
+		if err := script.Run(ctx, rs.Scripts.PreludePath,
+			[]string{path.Join(outDir, "info.json"),
+				path.Join(outDir, "result.json")},
+			rs.ConfDir, outDir, nil); err != nil {
+			log.Errorf("Hook %v finished with error: %v", script.Path, err)
+		}
 	}
 
 	return
@@ -994,6 +1027,7 @@ func main() {
 				Ready: time.Duration(cfg.Timeouts.Ready),
 				Test:  time.Duration(cfg.Timeouts.Test),
 				Stop:  time.Duration(cfg.Timeouts.Stop),
+				Hook:  time.Duration(cfg.Timeouts.Hook),
 			},
 		)
 		if err != nil {
