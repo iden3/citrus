@@ -479,9 +479,7 @@ func (rs *Repos) Run() {
 	}
 
 	log.Infof("Tests %08d (%s) result: %s", info.Ts, info.TsRFC3339, rs.Result)
-
 	rs.PrintResults()
-
 	rs.ArchiveOld()
 }
 
@@ -492,6 +490,11 @@ func (rs *Repos) run(info *Info, outDir string) {
 	ctxSetup, cancelSetup := context.WithTimeout(context.Background(),
 		rs.Timeouts.Setup*time.Second)
 	defer cancelSetup()
+	defer func() {
+		if err := rs.StoreMapResult(outDir); err != nil {
+			log.Panic(err)
+		}
+	}()
 	rs.Scripts.Setup.Result = ResultRun
 	if err := rs.StoreMapResult(outDir); err != nil {
 		log.Panic(err)

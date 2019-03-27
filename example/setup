@@ -1,2 +1,28 @@
 #!/bin/sh
+
+# Remove configuration files
 rm -rf /tmp/iden3-test
+
+# Install python3.6
+tmpdir="$(mktemp -d --suff citrus)"
+cd ${tmpdir}
+PYURL="https://github.com/chriskuehl/python3.6-debian-stretch/releases/download"
+PYVER1="3.6.3-1-deb9u1"
+PYVER2="3.6.3-1.deb9u1"
+wget ${PYURL}/v${PYVER1}/python3.6_${PYVER2}_amd64.deb
+wget ${PYURL}/v${PYVER1}/python3.6-minimal_${PYVER2}_amd64.deb
+wget ${PYURL}/v${PYVER1}/python3.6-dev_${PYVER2}_amd64.deb
+wget ${PYURL}/v${PYVER1}/libpython3.6_${PYVER2}_amd64.deb
+wget ${PYURL}/v${PYVER1}/libpython3.6-minimal_${PYVER2}_amd64.deb
+wget ${PYURL}/v${PYVER1}/libpython3.6-stdlib_${PYVER2}_amd64.deb
+wget ${PYURL}/v${PYVER1}/libpython3.6-dev_${PYVER2}_amd64.deb
+sudo dpkg -i *.deb
+cd /
+rm -r ${tmpdir}
+
+update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.5 1
+update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.6 2
+
+
+sudo apt-get install -y python3-pip
+sudo pip3 install matrix_client
