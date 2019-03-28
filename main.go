@@ -974,6 +974,9 @@ func main() {
 		printUsage()
 		return
 	}
+	log.SetFormatter(&log.TextFormatter{
+		FullTimestamp: true,
+	})
 	if *debug {
 		log.SetLevel(log.DebugLevel)
 	} else if *quiet {
