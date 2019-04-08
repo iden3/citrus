@@ -25,6 +25,13 @@ func ginFail(c *gin.Context, msg string, err error) {
 	return
 }
 
+type PipelineDecorator struct {
+	// The actual pipeline
+	Data interface{}
+	// Some helper data passed as "second pipeline"
+	Deco interface{}
+}
+
 func serveWeb(outDir, listenAddr string) {
 	defer panicMain()
 	wd, err := os.Getwd()
@@ -73,6 +80,12 @@ func serveWeb(outDir, listenAddr string) {
 					return ResultUnfinished
 				}
 				return infoRes.Res.Result
+			}
+		},
+		"Decorate": func(data interface{}, deco interface{}) *PipelineDecorator {
+			return &PipelineDecorator{
+				Data: data,
+				Deco: deco,
 			}
 		},
 	})

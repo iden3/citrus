@@ -1,5 +1,35 @@
 {{ $outDir := printf "/out/%08d" .infoRes.Info.Ts }}
 {{ $time := .infoRes.Info.Ts | RFC1123 }}
+{{ define "RenderResults" }}
+  {{ $outDir := .Deco }}
+  {{ with .Data }}
+    <ul>
+      {{ range $script, $result := .Result }}
+        <li>
+          <div class="res {{ $result }}">{{ $result | Res2Icon }}</div>
+          <a href="{{ $outDir }}/{{ $script }}.out.txt">
+            <strong>{{ $script }}</strong>
+          </a>
+        </li>
+      {{ end }}
+
+      {{ range $name, $scripts := .Repos }}
+      <li> <strong>{{ $name }}</strong>
+          <ul>
+            {{ range $script, $result := $scripts }}
+            <li>
+              <div class="res {{ $result }}">{{ $result | Res2Icon }}</div>
+              <a href="{{ $outDir }}/{{ $name }}/{{ $script }}.out.txt">
+                <strong>{{ $script }}</strong>
+              </a>
+            </li>
+            {{ end }}
+          </ul>
+      </li>
+      {{ end }}
+    </ul>
+  {{ end }}
+{{ end }}
 
 <!DOCTYPE html>
 <html lang="en">
@@ -42,83 +72,20 @@
 
     <h3>Setup</h3>
 
-    <ul>
-      {{ with .Setup.Result }}
-        <li>
-          <div class="res {{ . }}">{{ . | Res2Icon }}</div>
-          <a href="{{ $outDir }}/setup.out.txt">
-            <strong>global</strong>
-          </a>
-        </li>
-      {{ end }}
-      {{ range $name, $result := .Setup.Repos }}
-      <li>
-        <div class="res {{ $result }}">{{ $result | Res2Icon }}</div>
-        <a href="{{ $outDir }}/{{ $name }}/setup.out.txt">
-          <strong>{{ $name }}</strong>
-        </a>
-      </li>
-      {{ end }}
-    </ul>
+    {{ template "RenderResults" Decorate .Setup $outDir }}
 
     <h3>Start</h3>
 
-    <ul>
-      {{ range $name, $scripts := .Start.Repos }}
-      <li> <strong>{{ $name }}</strong>
-          <ul>
-            {{ range $script, $result := $scripts }}
-            <li>
-              <div class="res {{ $result }}">{{ $result | Res2Icon }}</div>
-              <a href="{{ $outDir }}/{{ $script }}.out.txt">
-                <strong>{{ $script }}</strong>
-              </a>
-            </li>
-            {{ end }}
-          </ul>
-      </li>
-      {{ end }}
-    </ul>
+    {{ template "RenderResults" Decorate .Start $outDir }}
 
     <h3>Test</h3>
 
-    <ul>
-      {{ range $name, $scripts := .Test.Repos }}
-      <li> <strong>{{ $name }}</strong>
-          <ul>
-            {{ range $script, $result := $scripts }}
-            <li>
-              <div class="res {{ $result }}">{{ $result | Res2Icon }}</div>
-              <a href="{{ $outDir }}/{{ $script }}.out.txt">
-                <strong>{{ $script }}</strong>
-              </a>
-            </li>
-            {{ end }}
-          </ul>
-      </li>
-      {{ end }}
-    </ul>
+    {{ template "RenderResults" Decorate .Test $outDir }}
 
     <h3>Stop</h3>
 
-    <ul>
-    {{ with .Stop.Result }}
-      <li>
-        <div class="res {{ . }}">{{ . | Res2Icon }}</div>
-        <a href="{{ $outDir }}/stop.out.txt">
-          <strong>global</strong>
-        </a>
-      </li>
-    {{ end }}
-      {{ range $name, $result := .Stop.Repos }}
-      <li>
-        <div class="res {{ $result }}">{{ $result | Res2Icon }}</div>
-        <a href="{{ $outDir }}/{{ $name }}/stop.out.txt">
-          <strong>{{ $name }}</strong>
-        </a>
-      </li>
-      {{ end }}
-    </ul>
+    {{ template "RenderResults" Decorate .Stop $outDir }}
+
   {{ else }}
     {{ if .infoRes.Running }}
       <h2>Scripts Results</h2>
@@ -132,4 +99,3 @@
 
 </body>
 </html>
-
