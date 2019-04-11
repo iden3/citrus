@@ -22,6 +22,11 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/client"
+	// "github.com/docker/docker/pkg/stdcopy"
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/config"
 	"gopkg.in/src-d/go-git.v4/plumbing"
@@ -31,6 +36,7 @@ var panicCh chan interface{}
 
 func panicMain() {
 	if x := recover(); x != nil {
+		log.Debugf("Recovered from panic, terminating...")
 		panicCh <- x
 	}
 }
@@ -55,9 +61,18 @@ type RepoCfg struct {
 	Branch string
 }
 
+type DockerCfg struct {
+	Image string
+	Pull  bool
+	Binds map[string]string
+}
+
 type Config struct {
 	WorkDir  string
 	CfgDir   string `mapstructure:"-"`
+	Debug    bool   `mapstructure:"-"`
+	Force    bool   `mapstructure:"-"`
+	Docker   bool   `mapstructure:"-"`
 	Listen   string
 	ReposUrl []string `mapstructure:"repos"`
 	Timeouts struct {
@@ -70,6 +85,7 @@ type Config struct {
 	}
 	ScriptsCfg map[string]map[string]ScriptCfg `mapstructure:"script"`
 	ReposCfg   map[string]RepoCfg              `mapstructure:"repo"`
+	DockerCfg  DockerCfg                       `mapstructure:"docker"`
 }
 
 type Timeouts struct {
@@ -123,7 +139,7 @@ func (s ByFileName) Less(i, j int) bool { return s[i].FileName < s[j].FileName }
 
 func (s *Script) Start(ctx context.Context, args []string,
 	ts string, readyCh chan bool) {
-	if err := os.MkdirAll(s.OutDir(ts), 0700); err != nil {
+	if err := os.MkdirAll(s.OutDir(ts), 0777); err != nil {
 		log.Panic(err)
 	}
 	log.Debugf("Running %s", s.Path())
@@ -307,7 +323,7 @@ type Repos struct {
 
 func NewRepos(cfgDir, outDir, reposDir string, reposUrl []string,
 	scriptsCfg map[string]map[string]ScriptCfg, reposCfg map[string]RepoCfg,
-	timeouts Timeouts) (*Repos, error) {
+	timeouts Timeouts, skipClone bool) (*Repos, error) {
 	repos := []*Repo{}
 	for _, repoUrl := range reposUrl {
 		name := repoUrl[strings.LastIndex(repoUrl, "/")+1:]
@@ -317,23 +333,30 @@ func NewRepos(cfgDir, outDir, reposDir string, reposUrl []string,
 		if reposCfg[repo.Name()].Branch != "" {
 			repo.Branch = reposCfg[repo.Name()].Branch
 		}
-		log.Infof("Cloning %s into %s", repo.URL, repo.Dir)
-		gitRepo, err := git.PlainClone(repo.Dir, false, &git.CloneOptions{
-			URL: repo.URL,
-			// SingleBranch:  true,
-			ReferenceName: plumbing.NewBranchReferenceName(repo.Branch),
-			Progress:      os.Stdout,
-		})
-		if err == git.ErrRepositoryAlreadyExists {
-			log.Infof("Repository %s already exists", repo.URL)
-			gitRepo, err = git.PlainOpen(repo.Dir)
+		var err error
+		if skipClone {
+			repo.GitRepo, err = git.PlainOpen(repo.Dir)
 			if err != nil {
 				return nil, err
 			}
-		} else if err != nil {
-			return nil, err
+		} else {
+			log.Infof("Cloning %s into %s", repo.URL, repo.Dir)
+			repo.GitRepo, err = git.PlainClone(repo.Dir, false, &git.CloneOptions{
+				URL: repo.URL,
+				// SingleBranch:  true,
+				ReferenceName: plumbing.NewBranchReferenceName(repo.Branch),
+				Progress:      os.Stdout,
+			})
+			if err == git.ErrRepositoryAlreadyExists {
+				log.Infof("Repository %s already exists", repo.URL)
+				repo.GitRepo, err = git.PlainOpen(repo.Dir)
+				if err != nil {
+					return nil, err
+				}
+			} else if err != nil {
+				return nil, err
+			}
 		}
-		repo.GitRepo = gitRepo
 
 		repoCfgDir := path.Join(cfgDir, repo.Name())
 		repoName := repo.Name()
@@ -440,7 +463,7 @@ func outputWrite(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 	readyStr string, readyCh chan bool) {
 	// log.Debugf("DBG Storing script output at %s", filePath)
 	defer panicMain()
-	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0600)
+	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		log.Panic(err)
 	}
@@ -527,7 +550,7 @@ func (rs *Repos) ClearResults() {
 func (rs *Repos) ArchiveOld() {
 	curLen := 16
 	archiveDir := path.Join(rs.OutDir, "archive")
-	if err := os.MkdirAll(archiveDir, 0700); err != nil {
+	if err := os.MkdirAll(archiveDir, 0777); err != nil {
 		log.Panic(err)
 	}
 	resultDirs, err := getResultsDir(rs.OutDir)
@@ -544,10 +567,162 @@ func (rs *Repos) ArchiveOld() {
 	}
 }
 
+type WriteChan chan *[]byte
+
+func NewWriteChan() WriteChan {
+	return WriteChan(make(chan *[]byte))
+}
+
+func (w *WriteChan) Write(p []byte) (n int, err error) {
+	*w <- &p
+	return len(p), nil
+}
+
+func (w *WriteChan) Close() {
+	// close(*w)
+	*w <- nil
+}
+
+var dockerContainerID string
+
+func (rs *Repos) DockerRun(cfg *Config) {
+	ctx := context.Background()
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithVersion("1.39"))
+	if err != nil {
+		log.Panic(err)
+	}
+	cli.NegotiateAPIVersion(ctx)
+
+	if cfg.DockerCfg.Pull {
+		log.Infof("Pulling docker image %v", cfg.DockerCfg.Image)
+		rd, err := cli.ImagePull(ctx, cfg.DockerCfg.Image, types.ImagePullOptions{})
+		if err != nil {
+			log.Panic(err)
+		}
+		reader := bufio.NewReader(rd)
+		for {
+			line, err := reader.ReadString('\n')
+			if len(line) > 0 {
+				log.Debugf("docker image pull: %s", line)
+			}
+			if err != nil {
+				break
+			}
+		}
+		rd.Close()
+	}
+
+	info := rs.NewInfo()
+	containerName := fmt.Sprintf("citrus-%08d", info.Ts)
+
+	// args := []string{"/bin/sh", "+ex", "-c", "/bin/ls -l /etc/ssl/certs"}
+	args := []string{"/citrus/citrus", "-conf", "/citrus-cfg", "-no-web", "-no-update", "-one-shot"}
+	if cfg.Debug {
+		args = append(args, "-debug")
+	}
+	if cfg.Force {
+		args = append(args, "-force")
+	}
+	mounts := []mount.Mount{
+		{
+			Type:     mount.TypeBind,
+			Source:   "/home/dev/git/iden3/citrus",
+			Target:   "/citrus",
+			ReadOnly: true,
+		},
+		{
+			Type:     mount.TypeBind,
+			Source:   cfg.CfgDir,
+			Target:   "/citrus-cfg",
+			ReadOnly: true,
+		},
+		{
+			Type:   mount.TypeBind,
+			Source: fmt.Sprintf("%s/out", cfg.WorkDir),
+			Target: fmt.Sprintf("%s/out", cfg.WorkDir),
+		},
+		{
+			Type:   mount.TypeBind,
+			Source: fmt.Sprintf("%s/git", cfg.WorkDir),
+			Target: fmt.Sprintf("%s/git", cfg.WorkDir),
+		},
+	}
+	for source, target := range cfg.DockerCfg.Binds {
+		mounts = append(mounts, mount.Mount{Type: mount.TypeBind,
+			Source: source, Target: target, ReadOnly: true})
+	}
+	log.Infof("Creating docker container with name %s", containerName)
+	resp, err := cli.ContainerCreate(ctx,
+		&container.Config{
+			Hostname:     "citrus",
+			User:         "root",
+			WorkingDir:   "/citrus",
+			Image:        cfg.DockerCfg.Image,
+			Cmd:          args,
+			Tty:          true,
+			AttachStdout: true,
+			AttachStderr: true,
+		},
+		&container.HostConfig{
+			Mounts: mounts,
+		},
+		nil, containerName)
+	if err != nil {
+		log.Panic(err)
+	}
+	dockerContainerID = resp.ID
+	defer func() {
+		if err := cli.ContainerRemove(ctx, resp.ID,
+			types.ContainerRemoveOptions{Force: true}); err != nil {
+			log.Panic(err)
+		}
+		dockerContainerID = ""
+	}()
+	cont, err := cli.ContainerAttach(ctx, resp.ID, types.ContainerAttachOptions{
+		Stdout: true,
+		Stderr: true,
+		Stream: true,
+	})
+	if err != nil {
+		log.Panic(err)
+	}
+
+	log.Infof("Starting docker container with name %s, id %s", containerName, resp.ID)
+	if err := cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{}); err != nil {
+		log.Panic(err)
+	}
+
+	reader := bufio.NewReader(cont.Reader)
+	for {
+		line, err := reader.ReadString('\n')
+		if len(line) > 0 {
+			log.Print(line)
+		}
+		if err != nil {
+			break
+		}
+	}
+	cont.Close()
+	cont.CloseWrite()
+
+	statusCh, errCh := cli.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			log.Panic(err)
+		}
+	case status := <-statusCh:
+		if status.StatusCode != 0 {
+			log.Panicf("docker process terminated with exit code %v (%v)",
+				status.StatusCode, status.Error)
+		}
+	}
+}
+
 func (rs *Repos) Run() {
 	info := rs.NewInfo()
 	outDir := path.Join(rs.OutDir, fmt.Sprintf("%08d", info.Ts))
-	if err := os.MkdirAll(outDir, 0700); err != nil {
+	if err := os.MkdirAll(outDir, 0777); err != nil {
 		log.Panic(err)
 	}
 	if err := rs.StoreInfo(&info, outDir); err != nil {
@@ -790,7 +965,7 @@ func (rs *Repos) StoreMapResult(outDir string) {
 	if err != nil {
 		log.Panic(err)
 	}
-	if err := ioutil.WriteFile(path.Join(outDir, "result.json"), resultJSON, 0600); err != nil {
+	if err := ioutil.WriteFile(path.Join(outDir, "result.json"), resultJSON, 0666); err != nil {
 		log.Panic(err)
 	}
 }
@@ -836,23 +1011,30 @@ func (rs *Repos) StoreInfo(info *Info, outDir string) error {
 	if err != nil {
 		return err
 	}
-	if err := ioutil.WriteFile(path.Join(outDir, "info.json"), infoJSON, 0600); err != nil {
+	if err := ioutil.WriteFile(path.Join(outDir, "info.json"), infoJSON, 0666); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (rs *Repos) UpdateLoop(forceInit bool, once bool) {
+func (rs *Repos) UpdateLoop(forceInit, once, skipUpdate bool, cfg *Config) {
 	defer panicMain()
 	var err error
-	updateInit, err := rs.Update()
-	if err != nil {
-		log.Panic(err)
+	var updateInit bool
+	if !skipUpdate {
+		updateInit, err = rs.Update()
+		if err != nil {
+			log.Panic(err)
+		}
 	}
 	updated := forceInit || updateInit || once
 	for {
 		if updated {
-			rs.Run()
+			if cfg.Docker {
+				rs.DockerRun(cfg)
+			} else {
+				rs.Run()
+			}
 			// rs.PrintResults()
 			if once {
 				return
@@ -956,6 +1138,8 @@ func main() {
 	noWeb := flag.Bool("no-web", false, "don't run the web backend")
 	force := flag.Bool("force", false, "force an initial run even if repositories were not updated")
 	oneShot := flag.Bool("one-shot", false, "run tests only once")
+	docker := flag.Bool("docker", false, "run tests in a docker container")
+	noUpdate := flag.Bool("no-update", false, "don't update the repositories")
 	flag.Parse()
 	if *cfgDir == "" {
 		printUsage()
@@ -990,6 +1174,9 @@ func main() {
 		log.Fatal(err)
 	}
 	cfg.CfgDir = strings.TrimSuffix(*cfgDir, "/")
+	cfg.Debug = *debug
+	cfg.Force = *force
+	cfg.Docker = *docker
 
 	if err := os.MkdirAll(cfg.WorkDir, 0700); err != nil {
 		log.Fatal(err)
@@ -1021,29 +1208,70 @@ func main() {
 				Stop:  time.Duration(cfg.Timeouts.Stop),
 				Hook:  time.Duration(cfg.Timeouts.Hook),
 			},
+			*noUpdate,
 		)
 		if err != nil {
 			log.Fatal(err)
 		}
-
 		repos.ArchiveOld()
-		go repos.UpdateLoop(*force, *oneShot)
+	}
+
+	stop := make(chan bool)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+
+	if !*webOnly {
+		if *oneShot && *noWeb {
+			go func() {
+				repos.UpdateLoop(*force, *oneShot, *noUpdate, &cfg)
+				stop <- true
+			}()
+		} else {
+			go repos.UpdateLoop(*force, *oneShot, *noUpdate, &cfg)
+		}
 	}
 
 	if !*noWeb {
 		go serveWeb(outDir, cfg.Listen)
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt)
-
 	var panicVal interface{}
 	select {
 	case <-sigCh:
 	case panicVal = <-panicCh:
+	case <-stop:
+		log.Info("UpdateLoop finished")
 	}
-	if repos != nil {
+	if repos != nil && !*docker {
 		repos.Cleanup()
+	}
+	if *docker {
+		err := func() error {
+			if dockerContainerID == "" {
+				return nil
+			}
+			log.Info("Cleaning docker environment...")
+			ctx := context.Background()
+			cli, err := client.NewClientWithOpts(client.FromEnv, client.WithVersion("1.39"))
+			if err != nil {
+				return err
+			}
+			cli.NegotiateAPIVersion(ctx)
+			log.Info("Stopping docker container...")
+			timeout := time.Duration(10 * time.Second)
+			if err := cli.ContainerStop(ctx, dockerContainerID,
+				&timeout); err != nil {
+				return err
+			}
+			if err := cli.ContainerRemove(ctx, dockerContainerID,
+				types.ContainerRemoveOptions{Force: true}); err != nil {
+				return err
+			}
+			return nil
+		}()
+		if err != nil {
+			log.Error(err)
+		}
 	}
 	if panicVal != nil {
 		log.Fatal(panicVal)

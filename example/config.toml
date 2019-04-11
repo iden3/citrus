@@ -41,3 +41,13 @@ branch = "master"
 [repo.iden3js]
 branch = "master"
 # branch = "feature/asynctests"
+
+[docker]
+# image = "docker.io/library/alpine:3.9"
+image = "docker.io/library/debian:jessie"
+pull = false
+
+[docker.binds]
+"/home/dev/git/iden3/private-configs/" = "/home/dev/git/iden3/private-configs/"
+# "/etc/ssl/certs/" = "/etc/ssl/certs/"
+# "/etc/ca-certificates/" = "/etc/ca-certificates/"
