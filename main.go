@@ -68,14 +68,15 @@ type DockerCfg struct {
 }
 
 type Config struct {
-	WorkDir  string
-	CfgDir   string `mapstructure:"-"`
-	Debug    bool   `mapstructure:"-"`
-	Force    bool   `mapstructure:"-"`
-	Docker   bool   `mapstructure:"-"`
-	Listen   string
-	ReposUrl []string `mapstructure:"repos"`
-	Timeouts struct {
+	WorkDir   string
+	CitrusDir string `mapstructure:"-"`
+	CfgDir    string `mapstructure:"-"`
+	Debug     bool   `mapstructure:"-"`
+	Force     bool   `mapstructure:"-"`
+	Docker    bool   `mapstructure:"-"`
+	Listen    string
+	ReposUrl  []string `mapstructure:"repos"`
+	Timeouts  struct {
 		Loop  int64
 		Setup int64
 		Ready int64
@@ -626,7 +627,7 @@ func (rs *Repos) DockerRun(cfg *Config) {
 	mounts := []mount.Mount{
 		{
 			Type:     mount.TypeBind,
-			Source:   "/home/dev/git/iden3/citrus",
+			Source:   cfg.CitrusDir,
 			Target:   "/citrus",
 			ReadOnly: true,
 		},
@@ -693,10 +694,11 @@ func (rs *Repos) DockerRun(cfg *Config) {
 	}
 
 	reader := bufio.NewReader(cont.Reader)
+	stdLog := log.StandardLogger()
 	for {
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
-			log.Print(line)
+			io.WriteString(stdLog.Out, fmt.Sprintf("DOCKER %s", line))
 		}
 		if err != nil {
 			break
@@ -1139,7 +1141,7 @@ func main() {
 	force := flag.Bool("force", false, "force an initial run even if repositories were not updated")
 	oneShot := flag.Bool("one-shot", false, "run tests only once")
 	docker := flag.Bool("docker", false, "run tests in a docker container")
-	noUpdate := flag.Bool("no-update", false, "don't update the repositories")
+	noUpdate := flag.Bool("no-update", false, "don't update the repositories during first loop")
 	flag.Parse()
 	if *cfgDir == "" {
 		printUsage()
@@ -1174,6 +1176,7 @@ func main() {
 		log.Fatal(err)
 	}
 	cfg.CfgDir = strings.TrimSuffix(*cfgDir, "/")
+	cfg.CitrusDir = wd
 	cfg.Debug = *debug
 	cfg.Force = *force
 	cfg.Docker = *docker
