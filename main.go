@@ -159,8 +159,8 @@ func (s *Script) Start(ctx context.Context, args []string,
 	}
 	// stdoutBuf := bufio.NewReader(stdout)
 	// stderrBuf := bufio.NewReader(stderr)
-	outFileName := fmt.Sprintf("%s.out.txt", path.Base(s.Path()))
-	go outputWrite(stdout, stderr, path.Join(s.OutDir(ts), outFileName), s.ReadyStr, readyCh)
+	endCh := make(chan bool)
+	go outputWrite(stdout, stderr, outFilePath, s.ReadyStr, readyCh, endCh)
 	if err := s.Cmd.Start(); err != nil {
 		log.Panic(err)
 	}
@@ -169,6 +169,7 @@ func (s *Script) Start(ctx context.Context, args []string,
 	go func() {
 		defer panicMain()
 		// s.Running = true
+		<-endCh
 		s.waitCh <- s.Cmd.Wait()
 		// s.Running = false
 	}()
@@ -463,7 +464,7 @@ func (rs *Repos) Update() (bool, error) {
 }
 
 func outputWrite(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
-	readyStr string, readyCh chan bool) {
+	readyStr string, readyCh chan bool, endCh chan bool) {
 	// log.Debugf("DBG Storing script output at %s", filePath)
 	defer panicMain()
 	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0666)
@@ -474,20 +475,20 @@ func outputWrite(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 	lineCh := make(chan string)
 	stdoutEndCh := make(chan error)
 	stderrEndCh := make(chan error)
-	readLine := func(rd io.Reader, endCh chan error) {
+	readLine := func(rd io.Reader, prefix string, endCh chan error) {
 		defer panicMain()
 		reader := bufio.NewReader(rd)
 		for {
 			line, err := reader.ReadString('\n')
-			lineCh <- line
+			lineCh <- fmt.Sprintf("%v%v", prefix, line)
 			if err != nil {
 				break
 			}
 		}
 		endCh <- err
 	}
-	go readLine(stdout, stdoutEndCh)
-	go readLine(stderr, stderrEndCh)
+	go readLine(stdout, "stdout: ", stdoutEndCh)
+	go readLine(stderr, "stderr: ", stderrEndCh)
 	ready := false
 	if readyStr == "" {
 		ready = true
@@ -511,6 +512,7 @@ func outputWrite(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 			}
 			stdoutClosed = true
 			if stderrClosed {
+				endCh <- true
 				return
 			}
 		case err := <-stderrEndCh:
@@ -519,6 +521,7 @@ func outputWrite(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 			}
 			stderrClosed = true
 			if stdoutClosed {
+				endCh <- true
 				return
 			}
 		}
