@@ -143,7 +143,9 @@ func (s *Script) Start(ctx context.Context, args []string,
 	if err := os.MkdirAll(s.OutDir(ts), 0777); err != nil {
 		log.Panic(err)
 	}
-	log.Debugf("Running %s", s.Path())
+	outFileName := fmt.Sprintf("%s.out.txt", path.Base(s.Path()))
+	outFilePath := path.Join(s.OutDir(ts), outFileName)
+	log.WithField("log", outFilePath).Debugf("Running %s", s.Path())
 	s.Cmd = exec.CommandContext(ctx, *s.PreludePath, append([]string{s.Path()}, args...)...)
 	s.Cmd.Dir = *s.RunDir
 	s.Cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
