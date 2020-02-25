@@ -330,9 +330,18 @@ func NewRepos(cfgDir, outDir, reposDir string, reposUrl []string,
 	timeouts Timeouts, skipClone bool) (*Repos, error) {
 	repos := []*Repo{}
 	for _, repoUrl := range reposUrl {
+		repoUrl = strings.TrimSuffix(repoUrl, "/")
+		repoUrl = strings.TrimSuffix(repoUrl, ".git")
+		repoUrl = fmt.Sprintf("%v.git", repoUrl)
 		name := repoUrl[strings.LastIndex(repoUrl, "/")+1:]
 		repoDir := path.Join(reposDir, name)
 		repo := Repo{URL: repoUrl, Branch: "master", Dir: repoDir}
+		repoDirLink := strings.TrimSuffix(repoDir, ".git")
+		if err := os.Symlink(name, repoDirLink); err != nil {
+			if !os.IsExist(err) {
+				return nil, err
+			}
+		}
 		// repo.OutDir = path.Join(outDir, repo.Name())
 		if reposCfg[repo.Name()].Branch != "" {
 			repo.Branch = reposCfg[repo.Name()].Branch
