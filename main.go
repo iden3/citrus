@@ -489,6 +489,9 @@ func outputWrite(stdout io.ReadCloser, stderr io.ReadCloser, filePath string,
 		reader := bufio.NewReader(rd)
 		for {
 			line, err := reader.ReadString('\n')
+			if !strings.HasSuffix(line, "\n") {
+				line = fmt.Sprintf("%v\n", line)
+			}
 			lineCh <- fmt.Sprintf("%v%v", prefix, line)
 			if err != nil {
 				break
